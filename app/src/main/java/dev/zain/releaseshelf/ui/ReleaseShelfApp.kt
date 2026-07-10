@@ -1,0 +1,721 @@
+package dev.zain.releaseshelf.ui
+
+import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.ExitToApp
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
+import dev.zain.releaseshelf.ReleaseShelfState
+import dev.zain.releaseshelf.ReleaseShelfViewModel
+import dev.zain.releaseshelf.data.RepositoryId
+import dev.zain.releaseshelf.data.TrackedRelease
+import dev.zain.releaseshelf.data.UpdateStatus
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+private enum class Destination { UPDATES, SOURCES }
+private enum class ReleaseFilter { ALL, UPDATES }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
+    val state by viewModel.state.collectAsState()
+    var destination by rememberSaveable { mutableStateOf(Destination.UPDATES) }
+    var addDialogVisible by rememberSaveable { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearMessage()
+        }
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            LargeTopAppBar(
+                title = {
+                    Column {
+                        Text(if (destination == Destination.UPDATES) "ReleaseShelf" else "Sources")
+                        Text(
+                            text = if (destination == Destination.UPDATES) {
+                                "Your apps, directly from GitHub"
+                            } else {
+                                "Repositories and access"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                actions = {
+                    if (destination == Destination.UPDATES) {
+                        IconButton(onClick = viewModel::refresh, enabled = !state.refreshing) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "Check for updates")
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
+            )
+        },
+        bottomBar = {
+            NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+                NavigationBarItem(
+                    selected = destination == Destination.UPDATES,
+                    onClick = { destination = Destination.UPDATES },
+                    icon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                    label = { Text("Updates") },
+                )
+                NavigationBarItem(
+                    selected = destination == Destination.SOURCES,
+                    onClick = { destination = Destination.SOURCES },
+                    icon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
+                    label = { Text("Sources") },
+                )
+            }
+        },
+        floatingActionButton = {
+            if (destination == Destination.SOURCES) {
+                FloatingActionButton(onClick = { addDialogVisible = true }) {
+                    Icon(Icons.Outlined.Add, contentDescription = "Add repository")
+                }
+            }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+    ) { padding ->
+        when (destination) {
+            Destination.UPDATES -> UpdatesScreen(
+                state = state,
+                contentPadding = padding,
+                onRefresh = viewModel::refresh,
+                onDownload = viewModel::download,
+                onOpenSources = { destination = Destination.SOURCES },
+            )
+            Destination.SOURCES -> SourcesScreen(
+                state = state,
+                contentPadding = padding,
+                onSaveToken = viewModel::saveToken,
+                onRemove = viewModel::removeSource,
+            )
+        }
+    }
+
+    if (addDialogVisible) {
+        AddSourceDialog(
+            onDismiss = { addDialogVisible = false },
+            onAdd = { value ->
+                if (viewModel.addSource(value)) addDialogVisible = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun UpdatesScreen(
+    state: ReleaseShelfState,
+    contentPadding: PaddingValues,
+    onRefresh: () -> Unit,
+    onDownload: (dev.zain.releaseshelf.data.ReleaseInfo) -> Unit,
+    onOpenSources: () -> Unit,
+) {
+    var filter by rememberSaveable { mutableStateOf(ReleaseFilter.ALL) }
+    val updateCount = state.releases.count { it.status == UpdateStatus.UPDATE_AVAILABLE }
+    val visibleReleases = state.releases.filter {
+        filter == ReleaseFilter.ALL || it.status == UpdateStatus.UPDATE_AVAILABLE
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = contentPadding.calculateTopPadding() + 8.dp,
+            end = 16.dp,
+            bottom = contentPadding.calculateBottomPadding() + 24.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            UpdateSummaryCard(
+                updateCount = updateCount,
+                sourceCount = state.sources.size,
+                refreshing = state.refreshing,
+                lastChecked = state.lastChecked,
+                onRefresh = onRefresh,
+            )
+        }
+        if (!state.tokenConfigured) {
+            item { AccessBanner(onOpenSources) }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = filter == ReleaseFilter.ALL,
+                    onClick = { filter = ReleaseFilter.ALL },
+                    label = { Text("All ${state.sources.size}") },
+                    leadingIcon = if (filter == ReleaseFilter.ALL) {
+                        { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    } else null,
+                )
+                FilterChip(
+                    selected = filter == ReleaseFilter.UPDATES,
+                    onClick = { filter = ReleaseFilter.UPDATES },
+                    label = { Text("Updates $updateCount") },
+                    leadingIcon = if (filter == ReleaseFilter.UPDATES) {
+                        { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    } else null,
+                )
+            }
+        }
+        if (!state.refreshing && visibleReleases.isEmpty()) {
+            item {
+                EmptyState(
+                    title = if (filter == ReleaseFilter.UPDATES) "Everything is current" else "No releases yet",
+                    body = if (filter == ReleaseFilter.UPDATES) {
+                        "There are no newer builds on your shelf."
+                    } else {
+                        "Add a source or publish an APK release to get started."
+                    },
+                        icon = if (filter == ReleaseFilter.UPDATES) Icons.Outlined.CheckCircle else Icons.AutoMirrored.Outlined.List,
+                )
+            }
+        }
+        items(visibleReleases, key = { it.repository.fullName }) { item ->
+            ReleaseCard(item = item, onDownload = onDownload)
+        }
+        if (state.refreshing && state.releases.isEmpty()) {
+            items(3) { LoadingCard() }
+        }
+    }
+}
+
+@Composable
+private fun UpdateSummaryCard(
+    updateCount: Int,
+    sourceCount: Int,
+    refreshing: Boolean,
+    lastChecked: Instant?,
+    onRefresh: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.elevatedCardColors(containerColor = Color.Transparent),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        listOf(colors.primaryContainer, colors.tertiaryContainer),
+                    ),
+                )
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Surface(
+                modifier = Modifier.size(52.dp),
+                shape = CircleShape,
+                color = colors.surface.copy(alpha = 0.82f),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (updateCount > 0) Icons.Outlined.Refresh else Icons.Outlined.CheckCircle,
+                        contentDescription = null,
+                        tint = colors.primary,
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = when {
+                        refreshing -> "Checking your shelf…"
+                        updateCount == 0 -> "You’re up to date"
+                        updateCount == 1 -> "1 update is ready"
+                        else -> "$updateCount updates are ready"
+                    },
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onPrimaryContainer,
+                )
+                Text(
+                    text = if (lastChecked == null) {
+                        "$sourceCount sources tracked"
+                    } else {
+                        "$sourceCount sources · checked ${formatTime(lastChecked)}"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onPrimaryContainer.copy(alpha = 0.76f),
+                )
+            }
+            if (refreshing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            } else {
+                FilledTonalButton(onClick = onRefresh) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Check now")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessBanner(onOpenSources: () -> Unit) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Private repository access", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Add a read-only GitHub token to check private releases.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onOpenSources) { Text("Set up") }
+        }
+    }
+}
+
+@Composable
+private fun ReleaseCard(
+    item: TrackedRelease,
+    onDownload: (dev.zain.releaseshelf.data.ReleaseInfo) -> Unit,
+) {
+    val context = LocalContext.current
+    val release = item.release
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AppMonogram(item.repository.name)
+                Spacer(Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = release?.displayName ?: item.repository.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = item.repository.fullName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (release?.releaseUrl?.isNotBlank() == true) {
+                    IconButton(
+                        onClick = {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, release.releaseUrl.toUri()))
+                        },
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.ExitToApp, contentDescription = "Open GitHub release")
+                    }
+                }
+            }
+
+            if (item.error != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Outlined.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    Text(
+                        item.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (release != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(statusTitle(item), style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            versionSummary(item),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    StatusChip(item.status)
+                }
+                AnimatedVisibility(visible = item.downloadProgress != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LinearProgressIndicator(
+                            progress = { item.downloadProgress ?: 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "Downloading ${(100 * (item.downloadProgress ?: 0f)).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (item.status == UpdateStatus.UPDATE_AVAILABLE || item.status == UpdateStatus.NOT_INSTALLED) {
+                    Button(
+                        onClick = { onDownload(release) },
+                        enabled = item.downloadProgress == null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (item.status == UpdateStatus.UPDATE_AVAILABLE) "Download update" else "Download and install")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppMonogram(name: String) {
+    Surface(
+        modifier = Modifier.size(52.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = name.firstOrNull()?.uppercase() ?: "A",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusChip(status: UpdateStatus) {
+    val (label, icon) = when (status) {
+        UpdateStatus.UPDATE_AVAILABLE -> "Update" to Icons.Outlined.Refresh
+        UpdateStatus.CURRENT -> "Current" to Icons.Outlined.CheckCircle
+        UpdateStatus.NOT_INSTALLED -> "Available" to Icons.AutoMirrored.Outlined.List
+        UpdateStatus.INSTALLED_NEWER -> "Ahead" to Icons.Outlined.CheckCircle
+        UpdateStatus.UNKNOWN -> "Unknown" to Icons.Outlined.Warning
+    }
+    AssistChip(
+        onClick = {},
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = if (status == UpdateStatus.UPDATE_AVAILABLE) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+        ),
+        border = null,
+    )
+}
+
+@Composable
+private fun SourcesScreen(
+    state: ReleaseShelfState,
+    contentPadding: PaddingValues,
+    onSaveToken: (String) -> Unit,
+    onRemove: (RepositoryId) -> Unit,
+) {
+    var token by rememberSaveable { mutableStateOf("") }
+    var pendingRemoval by remember { mutableStateOf<RepositoryId?>(null) }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = contentPadding.calculateTopPadding() + 8.dp,
+            end = 16.dp,
+            bottom = contentPadding.calculateBottomPadding() + 96.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.extraLarge,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            modifier = Modifier.size(44.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Outlined.Lock, contentDescription = null)
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("GitHub access", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (state.tokenConfigured) "Token configured" else "Required for private repositories",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (state.tokenConfigured) {
+                            Icon(Icons.Outlined.CheckCircle, contentDescription = "Configured", tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    Text(
+                        "Use a fine-grained token with read-only Contents access for only the repositories on this shelf. It is encrypted by Android Keystore and excluded from backups.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = token,
+                        onValueChange = { token = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(if (state.tokenConfigured) "Replace token" else "Fine-grained token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                onSaveToken(token)
+                                token = ""
+                            },
+                            enabled = token.isNotBlank(),
+                        ) { Text("Save access") }
+                        if (state.tokenConfigured) {
+                            TextButton(onClick = { onSaveToken("") }) { Text("Remove") }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Text(
+                "Tracked repositories",
+                modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 2.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        items(state.sources, key = { it.fullName }) { source ->
+            OutlinedCard(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+                Row(
+                    modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 8.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AppMonogram(source.name)
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(source.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            source.owner,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { pendingRemoval = source }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Remove ${source.name}")
+                    }
+                }
+            }
+        }
+    }
+
+    pendingRemoval?.let { source ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            icon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+            title = { Text("Remove ${source.name}?") },
+            text = { Text("ReleaseShelf will stop checking this repository. No installed app will be changed.") },
+            confirmButton = {
+                Button(onClick = {
+                    onRemove(source)
+                    pendingRemoval = null
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun AddSourceDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
+    var value by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
+        title = { Text("Add repository") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Track the latest published APK from a GitHub repository.")
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("owner/repository") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onAdd(value) }, enabled = value.isNotBlank()) { Text("Add source") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun EmptyState(title: String, body: String, icon: ImageVector) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 56.dp, horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Surface(
+            modifier = Modifier.size(72.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(32.dp))
+            }
+        }
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun LoadingCard() {
+    ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(52.dp)
+                        .clip(MaterialTheme.shapes.medium)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.fillMaxWidth(0.55f).height(16.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
+                    Box(Modifier.fillMaxWidth(0.8f).height(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
+                }
+            }
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+private fun statusTitle(item: TrackedRelease): String = when (item.status) {
+    UpdateStatus.UPDATE_AVAILABLE -> "Version ${item.release?.versionName} is ready"
+    UpdateStatus.CURRENT -> "Latest version installed"
+    UpdateStatus.NOT_INSTALLED -> "Ready to install"
+    UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
+    UpdateStatus.UNKNOWN -> "Version status unavailable"
+}
+
+private fun versionSummary(item: TrackedRelease): String {
+    val installed = item.installed?.versionName
+    val latest = item.release?.versionName ?: "Unknown"
+    return if (installed == null) "Latest $latest" else "Installed $installed · latest $latest"
+}
+
+private fun formatTime(instant: Instant): String = DateTimeFormatter.ofPattern("h:mm a")
+    .withZone(ZoneId.systemDefault())
+    .format(instant)

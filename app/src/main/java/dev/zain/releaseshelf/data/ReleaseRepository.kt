@@ -1,0 +1,74 @@
+package dev.zain.releaseshelf.data
+
+import android.content.Context
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import java.io.File
+
+class ReleaseRepository(private val context: Context) {
+    private val sourceStore = RepositoryStore(context)
+    private val tokenStore = TokenStore(context)
+    private val github = GitHubClient()
+
+    fun sources(): List<RepositoryId> = sourceStore.get()
+    fun hasToken(): Boolean = tokenStore.hasToken()
+    fun token(): String = tokenStore.get()
+    fun saveToken(token: String) = tokenStore.set(token)
+    fun addSource(repository: RepositoryId): List<RepositoryId> = sourceStore.add(repository)
+    fun removeSource(repository: RepositoryId): List<RepositoryId> = sourceStore.remove(repository)
+
+    fun load(repository: RepositoryId): TrackedRelease = runCatching {
+        val release = github.latestRelease(repository, tokenStore.get())
+        val installed = release.packageName?.let(::installedVersion)
+        TrackedRelease(
+            repository = repository,
+            release = release,
+            installed = installed,
+            status = updateStatus(release, installed),
+        )
+    }.getOrElse { error ->
+        val message = when (error) {
+            is GitHubException -> when (error.statusCode) {
+                401 -> "GitHub token was rejected"
+                403 -> "GitHub access or API limit blocked this request"
+                404 -> "Repository or published release was not found"
+                else -> error.message
+            }
+            else -> error.message ?: "Could not check this source"
+        }
+        TrackedRelease(repository = repository, error = message)
+    }
+
+    fun download(
+        release: ReleaseInfo,
+        onProgress: (Float) -> Unit,
+    ): File {
+        val safeName = release.apk.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val destination = File(File(context.filesDir, "updates"), safeName)
+        val actualSha = github.download(release.apk, tokenStore.get(), destination, onProgress)
+        release.sha256?.let { expected ->
+            check(actualSha.equals(expected, ignoreCase = true)) {
+                destination.delete()
+                "Downloaded APK checksum did not match the release metadata"
+            }
+        }
+        return destination
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installedVersion(packageName: String): InstalledVersion? {
+        val info: PackageInfo = try {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                context.packageManager.getPackageInfo(packageName, 0)
+            }
+        } catch (_: PackageManager.NameNotFoundException) {
+            return null
+        }
+        return InstalledVersion(
+            versionName = info.versionName.orEmpty().ifBlank { "Unknown" },
+            versionCode = info.longVersionCode,
+        )
+    }
+}
