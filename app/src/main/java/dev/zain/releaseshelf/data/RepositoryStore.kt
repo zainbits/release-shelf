@@ -49,6 +49,7 @@ class RepositoryStore(context: Context) {
             RepositoryId("zainbits", "Messages"),
             RepositoryId("zainbits", "NotiTriage"),
             RepositoryId("zainbits", "PrivateCallGuard"),
+            RepositoryId("zainbits", "ReleaseShelf"),
             RepositoryId("zainbits", "ZnKeyboard"),
         )
     }
