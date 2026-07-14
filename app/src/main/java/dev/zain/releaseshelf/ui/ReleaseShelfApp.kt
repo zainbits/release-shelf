@@ -301,8 +301,12 @@ private fun UpdateSummaryCard(
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(containerColor = Color.Transparent),
     ) {
+        // fillMaxWidth is required: without it the gradient only wraps content width.
+        // During refresh the progress bar forces full width; after refresh a short
+        // title left the card outline full-width but only the left half painted.
         Column(
             modifier = Modifier
+                .fillMaxWidth()
                 .background(
                     Brush.linearGradient(
                         listOf(colors.primaryContainer, colors.tertiaryContainer),
@@ -463,6 +467,13 @@ private fun ReleaseCard(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        release.apk.sizeBytes.takeIf { it > 0 }?.let { bytes ->
+                            Text(
+                                "APK ${formatFileSize(bytes)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     if (item.isCached) {
                         AssistChip(
@@ -495,7 +506,12 @@ private fun ReleaseCard(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                "Downloading ${(100 * (item.downloadProgress ?: 0f)).toInt()}%",
+                                buildString {
+                                    append("Downloading ${(100 * (item.downloadProgress ?: 0f)).toInt()}%")
+                                    release.apk.sizeBytes.takeIf { it > 0 }?.let { bytes ->
+                                        append(" · ${formatFileSize(bytes)}")
+                                    }
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(1f),
@@ -829,6 +845,18 @@ private fun versionSummary(item: TrackedRelease): String {
     val installed = item.installed?.versionName
     val latest = item.release?.versionName ?: "Unknown"
     return if (installed == null) "Latest $latest" else "Installed $installed · latest $latest"
+}
+
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kib = bytes / 1024.0
+    if (kib < 1024) return String.format("%.0f KB", kib)
+    val mib = kib / 1024.0
+    return if (mib < 10) {
+        String.format("%.1f MB", mib)
+    } else {
+        String.format("%.0f MB", mib)
+    }
 }
 
 private fun formatTime(instant: Instant): String = DateTimeFormatter.ofPattern("h:mm a")
