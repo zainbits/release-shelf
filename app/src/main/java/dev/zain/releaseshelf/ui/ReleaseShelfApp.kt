@@ -403,9 +403,9 @@ private fun ReleaseCard(
     val context = LocalContext.current
     val release = item.release
     val downloading = item.downloadProgress != null
-    val canInstallRelease = item.status == UpdateStatus.UPDATE_AVAILABLE ||
-        item.status == UpdateStatus.NOT_INSTALLED ||
-        item.isCached
+    // Only offer install/download when the shelf version is not already installed.
+    val needsInstall = item.status == UpdateStatus.UPDATE_AVAILABLE ||
+        item.status == UpdateStatus.NOT_INSTALLED
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -475,7 +475,7 @@ private fun ReleaseCard(
                             )
                         }
                     }
-                    if (item.isCached) {
+                    if (item.isCached && needsInstall) {
                         AssistChip(
                             onClick = {},
                             label = { Text("Cached") },
@@ -495,7 +495,7 @@ private fun ReleaseCard(
                     }
                     StatusChip(item.status)
                 }
-                AnimatedVisibility(visible = downloading) {
+                AnimatedVisibility(visible = downloading && needsInstall) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         LinearProgressIndicator(
                             progress = { item.downloadProgress ?: 0f },
@@ -524,7 +524,7 @@ private fun ReleaseCard(
                         }
                     }
                 }
-                if (canInstallRelease && !downloading) {
+                if (needsInstall && !downloading) {
                     if (item.isCached) {
                         Button(
                             onClick = { onInstallCached(release) },
@@ -556,9 +556,7 @@ private fun ReleaseCard(
                                 Text("Remove")
                             }
                         }
-                    } else if (item.status == UpdateStatus.UPDATE_AVAILABLE ||
-                        item.status == UpdateStatus.NOT_INSTALLED
-                    ) {
+                    } else {
                         Button(
                             onClick = { onDownloadAndInstall(release) },
                             modifier = Modifier.fillMaxWidth(),
@@ -829,15 +827,14 @@ private fun LoadingCard() {
 }
 
 private fun statusTitle(item: TrackedRelease): String = when {
+    item.status == UpdateStatus.CURRENT -> "Latest version installed"
+    item.status == UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
     item.isCached && item.status == UpdateStatus.UPDATE_AVAILABLE ->
         "Version ${item.release?.versionName} downloaded"
     item.isCached && item.status == UpdateStatus.NOT_INSTALLED ->
         "Downloaded and ready to install"
-    item.isCached -> "APK cached for later install"
     item.status == UpdateStatus.UPDATE_AVAILABLE -> "Version ${item.release?.versionName} is ready"
-    item.status == UpdateStatus.CURRENT -> "Latest version installed"
     item.status == UpdateStatus.NOT_INSTALLED -> "Ready to install"
-    item.status == UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
     else -> "Version status unavailable"
 }
 

@@ -21,11 +21,17 @@ class ReleaseRepository(private val context: Context) {
     fun load(repository: RepositoryId): TrackedRelease = runCatching {
         val release = github.latestRelease(repository, tokenStore.get())
         val installed = release.packageName?.let(::installedVersion)
+        val status = updateStatus(release, installed)
+        // Same (or newer) install means the cached APK is useless — drop it so we never
+        // offer Install / Re-download / Remove for an already-current app.
+        if (status == UpdateStatus.CURRENT || status == UpdateStatus.INSTALLED_NEWER) {
+            apkCache.remove(release)
+        }
         TrackedRelease(
             repository = repository,
             release = release,
             installed = installed,
-            status = updateStatus(release, installed),
+            status = status,
             isCached = apkCache.isCached(release),
         )
     }.getOrElse { error ->

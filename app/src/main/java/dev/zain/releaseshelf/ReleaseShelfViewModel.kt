@@ -9,6 +9,7 @@ import dev.zain.releaseshelf.data.ReleaseInfo
 import dev.zain.releaseshelf.data.ReleaseRepository
 import dev.zain.releaseshelf.data.RepositoryId
 import dev.zain.releaseshelf.data.TrackedRelease
+import dev.zain.releaseshelf.data.UpdateStatus
 import dev.zain.releaseshelf.updater.ApkDownloadWorker
 import java.io.File
 import java.time.Instant
@@ -332,10 +333,15 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         val current = mutableState.value.releases.associateBy { it.repository.fullName }
         return releases.map { loaded ->
             val previous = current[loaded.repository.fullName]
+            val alreadyInstalled = loaded.status == UpdateStatus.CURRENT ||
+                loaded.status == UpdateStatus.INSTALLED_NEWER
             loaded.copy(
-                downloadProgress = previous?.downloadProgress,
-                isCached = loaded.isCached || (previous?.isCached == true && loaded.release != null &&
-                    previous.release?.let { repository.isCached(it) } == true),
+                downloadProgress = if (alreadyInstalled) null else previous?.downloadProgress,
+                // Never keep a stale "cached" flag for an install that is already current.
+                isCached = if (alreadyInstalled) false else {
+                    loaded.isCached || (previous?.isCached == true && loaded.release != null &&
+                        previous.release?.let { repository.isCached(it) } == true)
+                },
             )
         }
     }
