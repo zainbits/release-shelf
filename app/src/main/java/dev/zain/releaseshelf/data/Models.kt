@@ -59,6 +59,7 @@ data class TrackedRelease(
     val status: UpdateStatus = UpdateStatus.UNKNOWN,
     val error: String? = null,
     val downloadProgress: Float? = null,
+    val isCached: Boolean = false,
 )
 
 fun updateStatus(remote: ReleaseInfo, installed: InstalledVersion?): UpdateStatus {

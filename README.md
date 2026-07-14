@@ -9,10 +9,12 @@ ReleaseShelf is a personal Android release client for APKs published in GitHub R
 - Public repository access without credentials and private repository access through a fine-grained GitHub token.
 - Token encryption with an Android Keystore AES-GCM key; encrypted token preferences are excluded from backup and device transfer.
 - Installed-version comparison using monotonic Android `versionCode`, with semantic `versionName` fallback for legacy releases.
-- Authenticated private-release APK downloads with progress, SHA-256 verification, package/version inspection, and installed-signature compatibility checks.
+- Background APK downloads via WorkManager with a foreground progress notification (optional notification permission on Android 13+).
+- Durable APK cache: verified downloads stay on device so you can **Download only**, install later, or retry after an install failure without re-downloading.
+- Authenticated private-release downloads with progress, SHA-256 verification, package/version inspection, and installed-signature compatibility checks.
 - One-time Android “install unknown apps” setup followed by the normal system confirmation for each install.
 
-The first release checks on app launch and when the user taps **Check now**. Periodic background checks and update notifications are intentionally left for a follow-up milestone.
+Release checks run on app launch and when the user taps **Check now**. Periodic background checks and update-available notifications remain a follow-up milestone.
 
 ## Build
 

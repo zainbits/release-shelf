@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Refresh
@@ -49,6 +50,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -80,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import dev.zain.releaseshelf.ReleaseShelfState
 import dev.zain.releaseshelf.ReleaseShelfViewModel
+import dev.zain.releaseshelf.data.ReleaseInfo
 import dev.zain.releaseshelf.data.RepositoryId
 import dev.zain.releaseshelf.data.TrackedRelease
 import dev.zain.releaseshelf.data.UpdateStatus
@@ -166,7 +169,11 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
                 state = state,
                 contentPadding = padding,
                 onRefresh = viewModel::refresh,
-                onDownload = viewModel::download,
+                onDownloadAndInstall = viewModel::downloadAndInstall,
+                onDownloadOnly = viewModel::downloadOnly,
+                onInstallCached = viewModel::installCached,
+                onCancelDownload = viewModel::cancelDownload,
+                onRemoveCached = viewModel::removeCached,
                 onOpenSources = { destination = Destination.SOURCES },
             )
             Destination.SOURCES -> SourcesScreen(
@@ -193,11 +200,16 @@ private fun UpdatesScreen(
     state: ReleaseShelfState,
     contentPadding: PaddingValues,
     onRefresh: () -> Unit,
-    onDownload: (dev.zain.releaseshelf.data.ReleaseInfo) -> Unit,
+    onDownloadAndInstall: (ReleaseInfo) -> Unit,
+    onDownloadOnly: (ReleaseInfo, Boolean) -> Unit,
+    onInstallCached: (ReleaseInfo) -> Unit,
+    onCancelDownload: (String) -> Unit,
+    onRemoveCached: (ReleaseInfo) -> Unit,
     onOpenSources: () -> Unit,
 ) {
     var filter by rememberSaveable { mutableStateOf(ReleaseFilter.ALL) }
     val updateCount = state.releases.count { it.status == UpdateStatus.UPDATE_AVAILABLE }
+    val cachedCount = state.releases.count { it.isCached }
     val visibleReleases = state.releases.filter {
         filter == ReleaseFilter.ALL || it.status == UpdateStatus.UPDATE_AVAILABLE
     }
@@ -216,6 +228,7 @@ private fun UpdatesScreen(
             UpdateSummaryCard(
                 updateCount = updateCount,
                 sourceCount = state.sources.size,
+                cachedCount = cachedCount,
                 refreshing = state.refreshing,
                 lastChecked = state.lastChecked,
                 onRefresh = onRefresh,
@@ -258,7 +271,14 @@ private fun UpdatesScreen(
             }
         }
         items(visibleReleases, key = { it.repository.fullName }) { item ->
-            ReleaseCard(item = item, onDownload = onDownload)
+            ReleaseCard(
+                item = item,
+                onDownloadAndInstall = onDownloadAndInstall,
+                onDownloadOnly = onDownloadOnly,
+                onInstallCached = onInstallCached,
+                onCancelDownload = onCancelDownload,
+                onRemoveCached = onRemoveCached,
+            )
         }
         if (state.refreshing && state.releases.isEmpty()) {
             items(3) { LoadingCard() }
@@ -270,6 +290,7 @@ private fun UpdatesScreen(
 private fun UpdateSummaryCard(
     updateCount: Int,
     sourceCount: Int,
+    cachedCount: Int,
     refreshing: Boolean,
     lastChecked: Instant?,
     onRefresh: () -> Unit,
@@ -307,6 +328,7 @@ private fun UpdateSummaryCard(
                 Text(
                     text = when {
                         refreshing -> "Checking your shelf…"
+                        updateCount == 0 && cachedCount > 0 -> "You’re up to date"
                         updateCount == 0 -> "You’re up to date"
                         updateCount == 1 -> "1 update is ready"
                         else -> "$updateCount updates are ready"
@@ -316,10 +338,15 @@ private fun UpdateSummaryCard(
                     color = colors.onPrimaryContainer,
                 )
                 Text(
-                    text = if (lastChecked == null) {
-                        "$sourceCount sources tracked"
-                    } else {
-                        "$sourceCount sources · checked ${formatTime(lastChecked)}"
+                    text = buildString {
+                        if (lastChecked == null) {
+                            append("$sourceCount sources tracked")
+                        } else {
+                            append("$sourceCount sources · checked ${formatTime(lastChecked)}")
+                        }
+                        if (cachedCount > 0) {
+                            append(" · $cachedCount cached")
+                        }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.onPrimaryContainer.copy(alpha = 0.76f),
@@ -363,10 +390,18 @@ private fun AccessBanner(onOpenSources: () -> Unit) {
 @Composable
 private fun ReleaseCard(
     item: TrackedRelease,
-    onDownload: (dev.zain.releaseshelf.data.ReleaseInfo) -> Unit,
+    onDownloadAndInstall: (ReleaseInfo) -> Unit,
+    onDownloadOnly: (ReleaseInfo, Boolean) -> Unit,
+    onInstallCached: (ReleaseInfo) -> Unit,
+    onCancelDownload: (String) -> Unit,
+    onRemoveCached: (ReleaseInfo) -> Unit,
 ) {
     val context = LocalContext.current
     val release = item.release
+    val downloading = item.downloadProgress != null
+    val canInstallRelease = item.status == UpdateStatus.UPDATE_AVAILABLE ||
+        item.status == UpdateStatus.NOT_INSTALLED ||
+        item.isCached
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -429,30 +464,105 @@ private fun ReleaseCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (item.isCached) {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("Cached") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.CheckCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            ),
+                            border = null,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
                     StatusChip(item.status)
                 }
-                AnimatedVisibility(visible = item.downloadProgress != null) {
+                AnimatedVisibility(visible = downloading) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         LinearProgressIndicator(
                             progress = { item.downloadProgress ?: 0f },
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Text(
-                            "Downloading ${(100 * (item.downloadProgress ?: 0f)).toInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Downloading ${(100 * (item.downloadProgress ?: 0f)).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { onCancelDownload(item.repository.fullName) }) {
+                                Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Cancel")
+                            }
+                        }
                     }
                 }
-                if (item.status == UpdateStatus.UPDATE_AVAILABLE || item.status == UpdateStatus.NOT_INSTALLED) {
-                    Button(
-                        onClick = { onDownload(release) },
-                        enabled = item.downloadProgress == null,
-                        modifier = Modifier.fillMaxWidth(),
+                if (canInstallRelease && !downloading) {
+                    if (item.isCached) {
+                        Button(
+                            onClick = { onInstallCached(release) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.ArrowForward,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Install cached APK")
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = { onDownloadOnly(release, true) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Re-download")
+                            }
+                            TextButton(onClick = { onRemoveCached(release) }) {
+                                Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Remove")
+                            }
+                        }
+                    } else if (item.status == UpdateStatus.UPDATE_AVAILABLE ||
+                        item.status == UpdateStatus.NOT_INSTALLED
                     ) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (item.status == UpdateStatus.UPDATE_AVAILABLE) "Download update" else "Download and install")
+                        Button(
+                            onClick = { onDownloadAndInstall(release) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.ArrowForward,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Download & install")
+                        }
+                        OutlinedButton(
+                            onClick = { onDownloadOnly(release, false) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Download only")
+                        }
                     }
                 }
             }
@@ -702,12 +812,17 @@ private fun LoadingCard() {
     }
 }
 
-private fun statusTitle(item: TrackedRelease): String = when (item.status) {
-    UpdateStatus.UPDATE_AVAILABLE -> "Version ${item.release?.versionName} is ready"
-    UpdateStatus.CURRENT -> "Latest version installed"
-    UpdateStatus.NOT_INSTALLED -> "Ready to install"
-    UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
-    UpdateStatus.UNKNOWN -> "Version status unavailable"
+private fun statusTitle(item: TrackedRelease): String = when {
+    item.isCached && item.status == UpdateStatus.UPDATE_AVAILABLE ->
+        "Version ${item.release?.versionName} downloaded"
+    item.isCached && item.status == UpdateStatus.NOT_INSTALLED ->
+        "Downloaded and ready to install"
+    item.isCached -> "APK cached for later install"
+    item.status == UpdateStatus.UPDATE_AVAILABLE -> "Version ${item.release?.versionName} is ready"
+    item.status == UpdateStatus.CURRENT -> "Latest version installed"
+    item.status == UpdateStatus.NOT_INSTALLED -> "Ready to install"
+    item.status == UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
+    else -> "Version status unavailable"
 }
 
 private fun versionSummary(item: TrackedRelease): String {

@@ -1,10 +1,15 @@
 package dev.zain.releaseshelf
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
@@ -18,11 +23,16 @@ class MainActivity : ComponentActivity() {
     private lateinit var viewModel: ReleaseShelfViewModel
     private lateinit var installer: ApkInstaller
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* optional; downloads still run without the progress notification */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         viewModel = ViewModelProvider(this)[ReleaseShelfViewModel::class.java]
         installer = ApkInstaller(this)
+        maybeRequestNotificationPermission()
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -43,7 +53,20 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         if (::installer.isInitialized) {
             installer.resumePending().onFailure(::showError)
+            // Do not auto-refresh on every resume while a download is in flight;
+            // still refresh so installed versions update after the system installer.
             viewModel.refresh()
+        }
+    }
+
+    private fun maybeRequestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

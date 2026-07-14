@@ -8,6 +8,7 @@ import java.io.File
 class ReleaseRepository(private val context: Context) {
     private val sourceStore = RepositoryStore(context)
     private val tokenStore = TokenStore(context)
+    private val apkCache = ApkCache(context)
     private val github = GitHubClient()
 
     fun sources(): List<RepositoryId> = sourceStore.get()
@@ -25,6 +26,7 @@ class ReleaseRepository(private val context: Context) {
             release = release,
             installed = installed,
             status = updateStatus(release, installed),
+            isCached = apkCache.isCached(release),
         )
     }.getOrElse { error ->
         val message = when (error) {
@@ -39,20 +41,16 @@ class ReleaseRepository(private val context: Context) {
         TrackedRelease(repository = repository, error = message)
     }
 
-    fun download(
-        release: ReleaseInfo,
-        onProgress: (Float) -> Unit,
-    ): File {
-        val safeName = release.apk.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val destination = File(File(context.filesDir, "updates"), safeName)
-        val actualSha = github.download(release.apk, tokenStore.get(), destination, onProgress)
-        release.sha256?.let { expected ->
-            check(actualSha.equals(expected, ignoreCase = true)) {
-                destination.delete()
-                "Downloaded APK checksum did not match the release metadata"
-            }
-        }
-        return destination
+    fun cachedApk(release: ReleaseInfo): File? = apkCache.find(release)
+
+    fun isCached(release: ReleaseInfo): Boolean = apkCache.isCached(release)
+
+    fun removeCached(release: ReleaseInfo) {
+        apkCache.remove(release)
+    }
+
+    fun removeCachedForSource(repository: RepositoryId) {
+        apkCache.remove(repository.fullName)
     }
 
     @Suppress("DEPRECATION")
