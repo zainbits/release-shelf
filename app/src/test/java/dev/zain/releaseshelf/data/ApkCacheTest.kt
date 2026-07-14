@@ -42,6 +42,26 @@ class ApkCacheTest {
         )
     }
 
+    @Test
+    fun olderCachedReleaseDoesNotMatchNewerLatest() {
+        val cached = sampleRelease(sha256 = "b".repeat(64), tag = "v0.2.2", versionCode = 22)
+        val latest = sampleRelease(sha256 = "c".repeat(64), tag = "v0.2.3", versionCode = 23)
+        val entry = ApkCache.CacheEntry(
+            repositoryFullName = cached.repository.fullName,
+            tag = cached.tag,
+            versionName = cached.versionName,
+            versionCode = cached.versionCode,
+            packageName = cached.packageName,
+            sha256 = cached.sha256,
+            apkName = cached.apk.name,
+            fileName = "old.apk",
+            sizeBytes = 10,
+            cachedAtEpochMs = 0,
+        )
+        assertTrue(entry.matches(cached))
+        assertFalse(entry.matches(latest))
+    }
+
     private fun sampleRelease(
         sha256: String?,
         tag: String = "v1.0.0",

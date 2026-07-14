@@ -38,10 +38,18 @@ class ApkCache(context: Context) {
     fun markCached(release: ReleaseInfo, file: File) {
         check(file.isFile && file.length() > 0) { "Cannot cache a missing APK" }
         val relative = file.name
-        val updated = entries()
-            .filterNot { it.repositoryFullName == release.repository.fullName }
-            .toMutableList()
-        updated.add(
+        // One cached APK per repository: drop any previous version's file + index row.
+        val remaining = mutableListOf<CacheEntry>()
+        for (entry in entries()) {
+            if (entry.repositoryFullName == release.repository.fullName) {
+                if (entry.fileName != relative) {
+                    deleteFiles(entry.fileName)
+                }
+            } else {
+                remaining.add(entry)
+            }
+        }
+        remaining.add(
             CacheEntry(
                 repositoryFullName = release.repository.fullName,
                 tag = release.tag,
@@ -55,7 +63,7 @@ class ApkCache(context: Context) {
                 cachedAtEpochMs = System.currentTimeMillis(),
             ),
         )
-        writeEntries(updated)
+        writeEntries(remaining)
     }
 
     fun remove(release: ReleaseInfo) {
@@ -68,10 +76,29 @@ class ApkCache(context: Context) {
             val match = entry.repositoryFullName == repositoryFullName &&
                 (tag == null || entry.tag == tag)
             if (match) {
-                File(directory, entry.fileName).delete()
-                File(directory, "${entry.fileName}.part").delete()
+                deleteFiles(entry.fileName)
             } else {
                 remaining.add(entry)
+            }
+        }
+        writeEntries(remaining)
+    }
+
+    /**
+     * Keep only a cache entry that still matches [latest] for this repository.
+     * Older uninstalled downloads (e.g. 0.2.2 while latest is 0.2.3) are deleted.
+     */
+    fun retainOnlyIfMatches(latest: ReleaseInfo) {
+        val remaining = mutableListOf<CacheEntry>()
+        for (entry in entries()) {
+            if (entry.repositoryFullName != latest.repository.fullName) {
+                remaining.add(entry)
+                continue
+            }
+            if (entry.matches(latest)) {
+                remaining.add(entry)
+            } else {
+                deleteFiles(entry.fileName)
             }
         }
         writeEntries(remaining)
@@ -85,11 +112,15 @@ class ApkCache(context: Context) {
             if (keep.contains(entry.repositoryFullName to identity)) {
                 remaining.add(entry)
             } else {
-                File(directory, entry.fileName).delete()
-                File(directory, "${entry.fileName}.part").delete()
+                deleteFiles(entry.fileName)
             }
         }
         writeEntries(remaining)
+    }
+
+    private fun deleteFiles(fileName: String) {
+        File(directory, fileName).delete()
+        File(directory, "$fileName.part").delete()
     }
 
     private fun entries(): List<CacheEntry> {

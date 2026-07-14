@@ -22,8 +22,9 @@ class ReleaseRepository(private val context: Context) {
         val release = github.latestRelease(repository, tokenStore.get())
         val installed = release.packageName?.let(::installedVersion)
         val status = updateStatus(release, installed)
-        // Same (or newer) install means the cached APK is useless — drop it so we never
-        // offer Install / Re-download / Remove for an already-current app.
+        // Drop any cached APK that is not the latest release (e.g. downloaded 0.2.2,
+        // never installed, then 0.2.3 published). Also drop when already installed.
+        apkCache.retainOnlyIfMatches(release)
         if (status == UpdateStatus.CURRENT || status == UpdateStatus.INSTALLED_NEWER) {
             apkCache.remove(release)
         }
