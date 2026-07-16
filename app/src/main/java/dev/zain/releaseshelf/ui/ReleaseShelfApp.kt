@@ -506,6 +506,7 @@ private fun ReleaseCard(
                         }
                     }
                     if (item.isCached && needsInstall) {
+                        val scheme = MaterialTheme.colorScheme
                         AssistChip(
                             onClick = {},
                             label = { Text("Cached") },
@@ -517,7 +518,9 @@ private fun ReleaseCard(
                                 )
                             },
                             colors = AssistChipDefaults.assistChipColors(
-                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                containerColor = scheme.tertiaryContainer,
+                                labelColor = scheme.onTertiaryContainer,
+                                leadingIconContentColor = scheme.onTertiaryContainer,
                             ),
                             border = null,
                         )
@@ -641,16 +644,17 @@ private fun StatusChip(status: UpdateStatus) {
         UpdateStatus.INSTALLED_NEWER -> "Ahead" to Icons.Outlined.CheckCircle
         UpdateStatus.UNKNOWN -> "Unknown" to Icons.Outlined.Warning
     }
+    // Update uses filled primary so it stays high-contrast (primaryContainer alone looked ghostly).
+    val isUpdate = status == UpdateStatus.UPDATE_AVAILABLE
+    val colors = MaterialTheme.colorScheme
     AssistChip(
         onClick = {},
         label = { Text(label) },
         leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
         colors = AssistChipDefaults.assistChipColors(
-            containerColor = if (status == UpdateStatus.UPDATE_AVAILABLE) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
+            containerColor = if (isUpdate) colors.primary else colors.surfaceContainerHigh,
+            labelColor = if (isUpdate) colors.onPrimary else colors.onSurface,
+            leadingIconContentColor = if (isUpdate) colors.onPrimary else colors.onSurfaceVariant,
         ),
         border = null,
     )
