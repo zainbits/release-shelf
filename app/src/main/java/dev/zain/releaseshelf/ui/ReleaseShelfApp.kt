@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +38,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -296,15 +298,30 @@ private fun UpdateSummaryCard(
     onRefresh: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val title = when {
+        refreshing -> "Checking your shelf…"
+        updateCount == 0 -> "You’re up to date"
+        updateCount == 1 -> "1 update is ready"
+        else -> "$updateCount updates are ready"
+    }
+    val subtitle = buildString {
+        if (lastChecked == null) {
+            append("$sourceCount sources tracked")
+        } else {
+            append("$sourceCount sources · checked ${formatTime(lastChecked)}")
+        }
+        if (cachedCount > 0) {
+            append(" · $cachedCount cached")
+        }
+    }
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
+        shape = MaterialTheme.shapes.large,
         colors = CardDefaults.elevatedCardColors(containerColor = Color.Transparent),
     ) {
-        // fillMaxWidth is required: without it the gradient only wraps content width.
-        // During refresh the progress bar forces full width; after refresh a short
-        // title left the card outline full-width but only the left half painted.
-        Column(
+        // fillMaxWidth keeps the gradient edge-to-edge. Single-row layout + always-present
+        // action button keep checking and idle states the same height.
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
@@ -312,58 +329,71 @@ private fun UpdateSummaryCard(
                         listOf(colors.primaryContainer, colors.tertiaryContainer),
                     ),
                 )
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Surface(
-                modifier = Modifier.size(52.dp),
+                modifier = Modifier.size(36.dp),
                 shape = CircleShape,
                 color = colors.surface.copy(alpha = 0.82f),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (updateCount > 0) Icons.Outlined.Refresh else Icons.Outlined.CheckCircle,
-                        contentDescription = null,
-                        tint = colors.primary,
-                    )
+                    if (refreshing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.primary,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (updateCount > 0) {
+                                Icons.Outlined.Refresh
+                            } else {
+                                Icons.Outlined.CheckCircle
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.primary,
+                        )
+                    }
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(
-                    text = when {
-                        refreshing -> "Checking your shelf…"
-                        updateCount == 0 && cachedCount > 0 -> "You’re up to date"
-                        updateCount == 0 -> "You’re up to date"
-                        updateCount == 1 -> "1 update is ready"
-                        else -> "$updateCount updates are ready"
-                    },
-                    style = MaterialTheme.typography.headlineSmall,
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = colors.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = buildString {
-                        if (lastChecked == null) {
-                            append("$sourceCount sources tracked")
-                        } else {
-                            append("$sourceCount sources · checked ${formatTime(lastChecked)}")
-                        }
-                        if (cachedCount > 0) {
-                            append(" · $cachedCount cached")
-                        }
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
                     color = colors.onPrimaryContainer.copy(alpha = 0.76f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (refreshing) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            } else {
-                FilledTonalButton(onClick = onRefresh) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Check now")
-                }
+            FilledTonalButton(
+                onClick = onRefresh,
+                enabled = !refreshing,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 96.dp)
+                    .height(36.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Check", style = MaterialTheme.typography.labelLarge)
             }
         }
     }
