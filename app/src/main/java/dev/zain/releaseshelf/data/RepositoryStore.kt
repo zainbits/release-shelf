@@ -50,6 +50,7 @@ class RepositoryStore(context: Context) {
             RepositoryId("zainbits", "NotiTriage"),
             RepositoryId("zainbits", "PrivateCallGuard"),
             RepositoryId("zainbits", "ReleaseShelf"),
+            RepositoryId("zainbits", "TubeWave"),
             RepositoryId("zainbits", "ZnKeyboard"),
         )
     }
