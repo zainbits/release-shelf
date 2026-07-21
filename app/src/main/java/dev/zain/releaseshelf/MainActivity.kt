@@ -71,6 +71,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showError(error: Throwable) {
-        Toast.makeText(this, error.message ?: "Could not open the installer", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, error.message ?: "Could not start the install", Toast.LENGTH_LONG).show()
     }
 }

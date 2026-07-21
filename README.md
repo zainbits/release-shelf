@@ -12,7 +12,7 @@ ReleaseShelf is a personal Android release client for APKs published in GitHub R
 - Background APK downloads via WorkManager with a foreground progress notification (optional notification permission on Android 13+).
 - Durable APK cache: verified downloads stay on device so you can **Download only**, install later, or retry after an install failure without re-downloading.
 - Authenticated private-release downloads with progress, SHA-256 verification, package/version inspection, and installed-signature compatibility checks.
-- One-time Android “install unknown apps” setup followed by the normal system confirmation for each install.
+- PackageInstaller session installs that request no user action when Android allows it (after ReleaseShelf is the installer of record). Initial installs and Play Protect interventions can still require confirmation.
 
 Release checks run on app launch and when the user taps **Check now**. Periodic background checks and update-available notifications remain a follow-up milestone.
 
@@ -65,6 +65,7 @@ ReleaseShelf retains a fallback parser for older `androidrun` release notes, so 
 
 ## Android security constraints
 
-- Android does not allow an ordinary app to silently update another app. The system installer always owns the confirmation step.
+- Verified APKs are staged through `PackageInstaller` sessions with `USER_ACTION_NOT_REQUIRED` and the `UPDATE_PACKAGES_WITHOUT_USER_ACTION` permission. After ReleaseShelf becomes the installer of record for a package, eligible subsequent updates may install without the ordinary confirmation screen.
+- Initial installs, Play Protect scans, developer-verification decisions, and any `STATUS_PENDING_USER_ACTION` fallback remain system-controlled. ReleaseShelf always launches the confirmation intent when Android still requires interaction.
 - An update APK must be signed by the same certificate as the installed app. Current `androidrun` releases use the stable local Android debug keystore for personal sideloading.
 - Dynamic repository sources can resolve arbitrary package IDs, so ReleaseShelf declares `QUERY_ALL_PACKAGES`. This matches its sideloaded app-store role but would require policy review before any Google Play distribution; a Play-targeted variant should prefer a fixed `<queries>` allowlist.
