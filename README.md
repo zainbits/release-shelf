@@ -13,6 +13,7 @@ ReleaseShelf is a personal Android release client for APKs published in GitHub R
 - Durable APK cache: verified downloads stay on device so you can **Download only**, install later, or retry after an install failure without re-downloading.
 - Authenticated private-release downloads with progress, SHA-256 verification, package/version inspection, and installed-signature compatibility checks.
 - PackageInstaller session installs that request no user action when Android allows it (after ReleaseShelf is the installer of record). Initial installs and Play Protect interventions can still require confirmation.
+- Install progress on release cards and via notifications so silent sessions still show that an install is underway.
 
 Release checks run on app launch and when the user taps **Check now**. Periodic background checks and update-available notifications remain a follow-up milestone.
 

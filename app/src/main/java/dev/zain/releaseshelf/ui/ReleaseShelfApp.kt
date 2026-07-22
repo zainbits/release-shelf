@@ -433,6 +433,8 @@ private fun ReleaseCard(
     val context = LocalContext.current
     val release = item.release
     val downloading = item.downloadProgress != null
+    val installing = item.installProgress != null
+    val busy = downloading || installing
     // Only offer install/download when the shelf version is not already installed.
     val needsInstall = item.status == UpdateStatus.UPDATE_AVAILABLE ||
         item.status == UpdateStatus.NOT_INSTALLED
@@ -557,7 +559,32 @@ private fun ReleaseCard(
                         }
                     }
                 }
-                if (needsInstall && !downloading) {
+                AnimatedVisibility(visible = installing && needsInstall) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val progress = item.installProgress ?: 0f
+                        if (progress <= 0f) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Text(
+                            buildString {
+                                append("Installing")
+                                if (progress > 0f) {
+                                    append(" ${(100 * progress).toInt()}%")
+                                } else {
+                                    append("…")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (needsInstall && !busy) {
                     if (item.isCached) {
                         Button(
                             onClick = { onInstallCached(release) },
@@ -861,6 +888,8 @@ private fun LoadingCard() {
 }
 
 private fun statusTitle(item: TrackedRelease): String = when {
+    item.installProgress != null -> "Installing ${item.release?.versionName ?: "update"}…"
+    item.downloadProgress != null -> "Downloading ${item.release?.versionName ?: "update"}…"
     item.status == UpdateStatus.CURRENT -> "Latest version installed"
     item.status == UpdateStatus.INSTALLED_NEWER -> "Installed build is newer"
     item.isCached && item.status == UpdateStatus.UPDATE_AVAILABLE ->

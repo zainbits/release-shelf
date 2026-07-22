@@ -22,6 +22,9 @@ import java.security.MessageDigest
  * complete without the ordinary confirmation screen. Initial installs, Play Protect
  * interventions, and any other system gate still surface via
  * [PackageInstaller.STATUS_PENDING_USER_ACTION].
+ *
+ * Install progress is reported through [InstallStatusBus] and [InstallNotifier] so the
+ * user can see work is underway even when the system UI is silent.
  */
 class ApkInstaller(private val activity: Activity) {
     private var pending: PendingInstall? = null
@@ -29,6 +32,18 @@ class ApkInstaller(private val activity: Activity) {
     fun begin(file: File, release: ReleaseInfo): Result<Unit> = runCatching {
         validate(file, release)
         val request = PendingInstall(file, release)
+        InstallStatusBus.tryEmit(
+            InstallStatusBus.Event.Started(
+                repositoryFullName = release.repository.fullName,
+                displayName = release.displayName,
+            ),
+        )
+        InstallNotifier.showProgress(
+            activity,
+            release.repository.fullName,
+            release.displayName,
+            progress = 0f,
+        )
         if (!activity.packageManager.canRequestPackageInstalls()) {
             pending = request
             activity.startActivity(
@@ -46,6 +61,18 @@ class ApkInstaller(private val activity: Activity) {
         val request = pending ?: return@runCatching false
         if (!activity.packageManager.canRequestPackageInstalls()) return@runCatching false
         pending = null
+        InstallStatusBus.tryEmit(
+            InstallStatusBus.Event.Started(
+                repositoryFullName = request.release.repository.fullName,
+                displayName = request.release.displayName,
+            ),
+        )
+        InstallNotifier.showProgress(
+            activity,
+            request.release.repository.fullName,
+            request.release.displayName,
+            progress = 0f,
+        )
         commitSession(request)
         true
     }
@@ -113,14 +140,27 @@ class ApkInstaller(private val activity: Activity) {
         }
 
         val sessionId = packageInstaller.createSession(params)
+        val repo = request.release.repository.fullName
+        ActiveInstallSessions.put(
+            ActiveInstallSessions.Entry(
+                sessionId = sessionId,
+                repositoryFullName = repo,
+                displayName = request.release.displayName,
+                packageName = request.release.packageName,
+            ),
+        )
         val session = packageInstaller.openSession(sessionId)
         try {
-            writeApk(session, request.file)
+            writeApk(session, request.file, repo, request.release.displayName)
+            InstallStatusBus.tryEmit(InstallStatusBus.Event.Progress(repo, 0.9f))
+            InstallNotifier.showProgress(activity, repo, request.release.displayName, 0.9f)
             val statusIntent = Intent(activity, InstallResultReceiver::class.java).apply {
                 action = InstallResultReceiver.ACTION_INSTALL_STATUS
                 setPackage(activity.packageName)
                 putExtra(InstallResultReceiver.EXTRA_DISPLAY_NAME, request.release.displayName)
                 putExtra(InstallResultReceiver.EXTRA_PACKAGE_NAME, request.release.packageName)
+                putExtra(InstallResultReceiver.EXTRA_REPOSITORY, repo)
+                putExtra(InstallResultReceiver.EXTRA_SESSION_ID, sessionId)
             }
             val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
@@ -140,6 +180,22 @@ class ApkInstaller(private val activity: Activity) {
             } catch (_: Exception) {
                 // Session may already be closed or invalid.
             }
+            ActiveInstallSessions.remove(sessionId)
+            InstallNotifier.showFailed(
+                activity,
+                repo,
+                request.release.displayName,
+                error.message,
+            )
+            InstallStatusBus.tryEmit(
+                InstallStatusBus.Event.Finished(
+                    repositoryFullName = repo,
+                    packageName = request.release.packageName,
+                    displayName = request.release.displayName,
+                    success = false,
+                    message = error.message ?: "Could not start the package install session",
+                ),
+            )
             throw IOException("Could not start the package install session", error)
         } finally {
             try {
@@ -150,10 +206,39 @@ class ApkInstaller(private val activity: Activity) {
         }
     }
 
-    private fun writeApk(session: PackageInstaller.Session, file: File) {
+    private fun writeApk(
+        session: PackageInstaller.Session,
+        file: File,
+        repositoryFullName: String,
+        displayName: String,
+    ) {
+        val total = file.length().coerceAtLeast(1L)
+        var written = 0L
+        var lastReportedPercent = -1
         session.openWrite(SESSION_APK_NAME, 0, file.length()).use { out ->
             file.inputStream().use { input ->
-                input.copyTo(out, bufferSize = COPY_BUFFER_SIZE)
+                val buffer = ByteArray(COPY_BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    out.write(buffer, 0, read)
+                    written += read
+                    // Stage write is the first ~80% of our reported progress; system finishes rest.
+                    val progress = (written.toFloat() / total.toFloat() * 0.8f).coerceIn(0f, 0.8f)
+                    val percent = (progress * 100).toInt()
+                    if (percent != lastReportedPercent) {
+                        lastReportedPercent = percent
+                        InstallStatusBus.tryEmit(
+                            InstallStatusBus.Event.Progress(repositoryFullName, progress),
+                        )
+                        InstallNotifier.showProgress(
+                            activity,
+                            repositoryFullName,
+                            displayName,
+                            progress,
+                        )
+                    }
+                }
             }
             session.fsync(out)
         }

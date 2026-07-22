@@ -11,6 +11,7 @@ import dev.zain.releaseshelf.data.RepositoryId
 import dev.zain.releaseshelf.data.TrackedRelease
 import dev.zain.releaseshelf.data.UpdateStatus
 import dev.zain.releaseshelf.updater.ApkDownloadWorker
+import dev.zain.releaseshelf.updater.InstallStatusBus
 import java.io.File
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
 
     init {
         observeDownloads()
+        observeInstallStatus()
         refresh()
     }
 
@@ -72,7 +74,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 }
             }
             mutableState.value = mutableState.value.copy(
-                releases = mergeDownloadState(releases),
+                releases = mergeTransientState(releases),
                 refreshing = false,
                 tokenConfigured = repository.hasToken(),
                 lastChecked = Instant.now(),
@@ -130,9 +132,15 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             )
             return
         }
-        viewModelScope.launch {
-            mutableInstallRequests.emit(InstallRequest(file, release))
-        }
+        requestInstall(file, release)
+    }
+
+    /** Called by the activity when starting the system installer fails before a session is created. */
+    fun onInstallStartFailed(release: ReleaseInfo, message: String?) {
+        updateRelease(release.repository.fullName) { it.copy(installProgress = null) }
+        mutableState.value = mutableState.value.copy(
+            message = message ?: "Could not start the install",
+        )
     }
 
     fun cancelDownload(repositoryFullName: String) {
@@ -151,6 +159,20 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         mutableState.value = mutableState.value.copy(message = null)
     }
 
+    private fun requestInstall(file: File, release: ReleaseInfo) {
+        val key = release.repository.fullName
+        val existing = mutableState.value.releases.firstOrNull { it.repository.fullName == key }
+        if (existing?.installProgress != null) return
+
+        updateRelease(key) { it.copy(installProgress = 0f, downloadProgress = null) }
+        mutableState.value = mutableState.value.copy(
+            message = "Installing ${release.displayName}…",
+        )
+        viewModelScope.launch {
+            mutableInstallRequests.emit(InstallRequest(file, release))
+        }
+    }
+
     private fun startDownload(
         release: ReleaseInfo,
         installWhenReady: Boolean,
@@ -159,6 +181,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         val key = release.repository.fullName
         val existing = mutableState.value.releases.firstOrNull { it.repository.fullName == key }
         if (existing?.downloadProgress != null && !force) return
+        if (existing?.installProgress != null && !force) return
 
         if (force) {
             ApkDownloadWorker.cancel(getApplication(), key)
@@ -168,10 +191,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             repository.cachedApk(release)?.let { file ->
                 updateRelease(key) { it.copy(isCached = true, downloadProgress = null) }
                 if (installWhenReady) {
-                    viewModelScope.launch {
-                        mutableInstallRequests.emit(InstallRequest(file, release))
-                    }
-                    mutableState.value = mutableState.value.copy(message = "Using cached APK")
+                    requestInstall(file, release)
                 } else {
                     mutableState.value = mutableState.value.copy(message = "APK already cached")
                 }
@@ -203,6 +223,70 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    private fun observeInstallStatus() {
+        viewModelScope.launch {
+            InstallStatusBus.events.collect { event ->
+                when (event) {
+                    is InstallStatusBus.Event.Started -> {
+                        updateRelease(event.repositoryFullName) {
+                            it.copy(installProgress = 0f, downloadProgress = null)
+                        }
+                    }
+                    is InstallStatusBus.Event.Progress -> {
+                        updateRelease(event.repositoryFullName) {
+                            it.copy(
+                                installProgress = event.progress.coerceIn(0f, 1f),
+                                downloadProgress = null,
+                            )
+                        }
+                    }
+                    is InstallStatusBus.Event.Finished -> {
+                        applyInstallFinished(event)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyInstallFinished(event: InstallStatusBus.Event.Finished) {
+        val repoKey = event.repositoryFullName
+            ?: event.packageName?.let { pkg ->
+                mutableState.value.releases.firstOrNull { it.release?.packageName == pkg }
+                    ?.repository?.fullName
+            }
+            ?: mutableState.value.releases.firstOrNull {
+                it.release?.displayName == event.displayName && it.installProgress != null
+            }?.repository?.fullName
+
+        if (repoKey != null) {
+            updateRelease(repoKey) { item ->
+                item.copy(
+                    installProgress = null,
+                    // Keep cache on failure so the user can retry without re-downloading.
+                    isCached = if (event.success) false else item.isCached,
+                )
+            }
+        } else {
+            // Clear any stuck installing rows if we cannot resolve the repo.
+            mutableState.value = mutableState.value.copy(
+                releases = mutableState.value.releases.map { item ->
+                    if (item.installProgress != null) item.copy(installProgress = null) else item
+                },
+            )
+        }
+
+        mutableState.value = mutableState.value.copy(
+            message = when {
+                event.success -> "${event.displayName} installed"
+                event.message != null -> event.message
+                else -> "Could not install ${event.displayName}"
+            },
+        )
+        if (event.success) {
+            refresh()
+        }
+    }
+
     private fun applyWorkInfos(infos: List<WorkInfo>) {
         val activeByRepo = mutableMapOf<String, WorkInfo>()
         for (info in infos) {
@@ -231,7 +315,10 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             when (info.state) {
                 WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
                     releases = releases.map { item ->
-                        if (item.repository.fullName == repo && item.downloadProgress == null) {
+                        if (item.repository.fullName == repo &&
+                            item.downloadProgress == null &&
+                            item.installProgress == null
+                        ) {
                             item.copy(downloadProgress = 0f)
                         } else {
                             item
@@ -241,7 +328,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 WorkInfo.State.RUNNING -> {
                     val progress = info.progress.getFloat(ApkDownloadWorker.KEY_PROGRESS, 0f)
                     releases = releases.map { item ->
-                        if (item.repository.fullName == repo) {
+                        if (item.repository.fullName == repo && item.installProgress == null) {
                             item.copy(downloadProgress = progress.coerceIn(0f, 1f))
                         } else {
                             item
@@ -273,9 +360,10 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                         if (installWhenReady && file != null) {
                             val release = releases.firstOrNull { it.repository.fullName == repo }?.release
                             if (release != null) {
-                                viewModelScope.launch {
-                                    mutableInstallRequests.emit(InstallRequest(file, release))
-                                }
+                                // Update local snapshot then request install (sets installProgress).
+                                mutableState.value = mutableState.value.copy(releases = releases)
+                                requestInstall(file, release)
+                                return
                             }
                         }
                     }
@@ -308,7 +396,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        // Clear progress for repos that no longer have active work.
+        // Clear download progress for repos that no longer have active work.
         val activeRepos = activeByRepo.keys
         releases = releases.map { item ->
             if (item.downloadProgress != null && item.repository.fullName !in activeRepos) {
@@ -329,7 +417,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         )
     }
 
-    private fun mergeDownloadState(releases: List<TrackedRelease>): List<TrackedRelease> {
+    private fun mergeTransientState(releases: List<TrackedRelease>): List<TrackedRelease> {
         val current = mutableState.value.releases.associateBy { it.repository.fullName }
         return releases.map { loaded ->
             val previous = current[loaded.repository.fullName]
@@ -337,6 +425,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 loaded.status == UpdateStatus.INSTALLED_NEWER
             loaded.copy(
                 downloadProgress = if (alreadyInstalled) null else previous?.downloadProgress,
+                installProgress = if (alreadyInstalled) null else previous?.installProgress,
                 // Never keep a stale "cached" flag for an install that is already current.
                 isCached = if (alreadyInstalled) false else {
                     loaded.isCached || (previous?.isCached == true && loaded.release != null &&

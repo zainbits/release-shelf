@@ -59,6 +59,8 @@ data class TrackedRelease(
     val status: UpdateStatus = UpdateStatus.UNKNOWN,
     val error: String? = null,
     val downloadProgress: Float? = null,
+    /** Non-null while a PackageInstaller session is active for this release (0f–1f). */
+    val installProgress: Float? = null,
     val isCached: Boolean = false,
 )
 

@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { /* optional; downloads still run without the progress notification */ }
+    ) { /* optional; downloads/installs still run without the progress notification */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +37,10 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.installRequests.collect { request ->
-                    installer.begin(request.file, request.release).onFailure(::showError)
+                    installer.begin(request.file, request.release).onFailure { error ->
+                        viewModel.onInstallStartFailed(request.release, error.message)
+                        showError(error)
+                    }
                 }
             }
         }

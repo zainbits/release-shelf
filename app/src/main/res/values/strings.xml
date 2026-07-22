@@ -5,5 +5,11 @@
     <string name="download_notification_title">Downloading %1$s</string>
     <string name="download_notification_complete">%1$s is ready to install</string>
     <string name="download_notification_failed">Could not download %1$s</string>
-    <string name="notification_permission_rationale">Allow notifications so downloads can continue with progress while the app is in the background.</string>
+    <string name="install_channel_name">APK installs</string>
+    <string name="install_channel_description">Progress while ReleaseShelf installs release APKs</string>
+    <string name="install_notification_title">Installing %1$s</string>
+    <string name="install_notification_progress">Installing…</string>
+    <string name="install_notification_complete">%1$s installed</string>
+    <string name="install_notification_failed">Could not install %1$s</string>
+    <string name="notification_permission_rationale">Allow notifications so downloads and installs can continue with progress while the app is in the background.</string>
 </resources>
