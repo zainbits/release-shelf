@@ -62,6 +62,14 @@ data class TrackedRelease(
     /** Non-null while a PackageInstaller session is active for this release (0f–1f). */
     val installProgress: Float? = null,
     val isCached: Boolean = false,
+    /** Host working tree has uncommitted changes (SSH scan). */
+    val hasUncommittedChanges: Boolean = false,
+    /** Short porcelain status preview from the build host. */
+    val dirtySummary: String? = null,
+    /** Host-path / SSH scan problem for this source (does not block install actions). */
+    val hostError: String? = null,
+    /** Non-null while a remote commit/bump/publish is running. */
+    val publishPhase: String? = null,
 )
 
 fun updateStatus(remote: ReleaseInfo, installed: InstalledVersion?): UpdateStatus {

@@ -5,15 +5,27 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import dev.zain.releaseshelf.data.HostGitClient
+import dev.zain.releaseshelf.data.LlmChatClient
+import dev.zain.releaseshelf.data.LlmModelOption
+import dev.zain.releaseshelf.data.LlmProfile
+import dev.zain.releaseshelf.data.LlmProfileStore
+import dev.zain.releaseshelf.data.LlmProviderKind
+import dev.zain.releaseshelf.data.OpenRouterProviderOption
 import dev.zain.releaseshelf.data.ReleaseInfo
 import dev.zain.releaseshelf.data.ReleaseRepository
+import dev.zain.releaseshelf.data.RepoWorkingTree
 import dev.zain.releaseshelf.data.RepositoryId
+import dev.zain.releaseshelf.data.SshSettings
+import dev.zain.releaseshelf.data.SshSettingsStore
 import dev.zain.releaseshelf.data.TrackedRelease
 import dev.zain.releaseshelf.data.UpdateStatus
+import dev.zain.releaseshelf.data.VersionBump
 import dev.zain.releaseshelf.updater.ApkDownloadWorker
 import dev.zain.releaseshelf.updater.InstallStatusBus
 import java.io.File
 import java.time.Instant
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -30,15 +42,42 @@ data class ReleaseShelfState(
     val sources: List<RepositoryId> = emptyList(),
     val releases: List<TrackedRelease> = emptyList(),
     val refreshing: Boolean = false,
+    val scanningHost: Boolean = false,
     val tokenConfigured: Boolean = false,
+    val sshConfigured: Boolean = false,
+    val llmConfigured: Boolean = false,
     val lastChecked: Instant? = null,
     val message: String? = null,
+    val sshSettings: SshSettings = SshSettings(),
+    val llmProfiles: List<LlmProfile> = emptyList(),
+    val activeLlmProfileId: String = "",
+    val publishDraft: PublishDraft? = null,
+    val modelOptions: List<LlmModelOption> = emptyList(),
+    val modelLoadStatus: String? = null,
+    val openRouterProviders: List<OpenRouterProviderOption> = emptyList(),
+    val openRouterProviderLoadStatus: String? = null,
+)
+
+data class PublishDraft(
+    val repository: RepositoryId,
+    val generating: Boolean = false,
+    val publishing: Boolean = false,
+    val commitMessage: String = "",
+    val bump: VersionBump = VersionBump.Patch,
+    val bumpRationale: String = "",
+    val statusPorcelain: String = "",
+    val error: String? = null,
+    val logTail: String = "",
 )
 
 data class InstallRequest(val file: File, val release: ReleaseInfo)
 
 class ReleaseShelfViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = ReleaseRepository(application)
+    private val sshStore = SshSettingsStore(application)
+    private val llmStore = LlmProfileStore(application).also { it.ensureDefaults() }
+    private val hostGit = HostGitClient()
+    private val llmClient = LlmChatClient(application)
     private val workManager = WorkManager.getInstance(application)
     private val handledSuccessIds = mutableSetOf<String>()
 
@@ -46,6 +85,11 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         ReleaseShelfState(
             sources = repository.sources(),
             tokenConfigured = repository.hasToken(),
+            sshConfigured = sshStore.get().isConfigured,
+            llmConfigured = llmStore.activeProfile()?.isConfigured == true,
+            sshSettings = sshStore.get().copy(password = if (sshStore.get().password.isNotBlank()) "••••••••" else ""),
+            llmProfiles = llmStore.profiles().map { it.redacted() },
+            activeLlmProfileId = llmStore.activeProfileId(),
         ),
     )
     val state = mutableState.asStateFlow()
@@ -56,6 +100,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
     init {
         observeDownloads()
         observeInstallStatus()
+        refreshSettingsFromDisk()
         refresh()
     }
 
@@ -79,6 +124,58 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 tokenConfigured = repository.hasToken(),
                 lastChecked = Instant.now(),
             )
+            scanHostWorkingTrees()
+        }
+    }
+
+    fun scanHostWorkingTrees() {
+        val settings = sshStore.get()
+        if (!settings.isConfigured) {
+            mutableState.value = mutableState.value.copy(
+                sshConfigured = false,
+                scanningHost = false,
+                releases = mutableState.value.releases.map {
+                    it.copy(hasUncommittedChanges = false, dirtySummary = null, hostError = null)
+                },
+            )
+            return
+        }
+        if (mutableState.value.scanningHost) return
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(scanningHost = true)
+            val trees = withContext(Dispatchers.IO) {
+                runCatching {
+                    hostGit.scanWorkingTrees(settings, mutableState.value.sources)
+                }.getOrElse { error ->
+                    mutableState.value.sources.map {
+                        RepoWorkingTree(
+                            repository = it,
+                            localPath = "",
+                            isDirty = false,
+                            statusPorcelain = "",
+                            error = error.message ?: "SSH scan failed",
+                        )
+                    }
+                }
+            }
+            val byRepo = trees.associateBy { it.repository.fullName.lowercase() }
+            mutableState.value = mutableState.value.copy(
+                scanningHost = false,
+                sshConfigured = true,
+                releases = mutableState.value.releases.map { item ->
+                    val tree = byRepo[item.repository.fullName.lowercase()]
+                    item.copy(
+                        hasUncommittedChanges = tree?.isDirty == true,
+                        dirtySummary = tree?.statusPorcelain
+                            ?.lineSequence()
+                            ?.filter { it.isNotBlank() }
+                            ?.take(3)
+                            ?.joinToString(" · ")
+                            ?.take(120),
+                        hostError = tree?.error,
+                    )
+                },
+            )
         }
     }
 
@@ -89,6 +186,274 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             message = if (token.isBlank()) "GitHub token removed" else "GitHub token saved securely",
         )
         refresh()
+    }
+
+    fun saveSshSettings(settings: SshSettings) {
+        val existing = sshStore.get()
+        val password = when {
+            settings.password.isBlank() -> existing.password
+            settings.password == MASKED_SECRET && existing.password.isNotBlank() -> existing.password
+            else -> settings.password
+        }
+        val toSave = settings.copy(password = password)
+        sshStore.save(toSave)
+        refreshSettingsFromDisk()
+        mutableState.value = mutableState.value.copy(
+            message = if (toSave.isConfigured) "SSH settings saved" else "SSH settings saved (incomplete)",
+        )
+        scanHostWorkingTrees()
+    }
+
+    fun testSshConnection(settings: SshSettings) {
+        viewModelScope.launch {
+            val existing = sshStore.get()
+            val password = when {
+                settings.password.isBlank() -> existing.password
+                settings.password == MASKED_SECRET && existing.password.isNotBlank() -> existing.password
+                else -> settings.password
+            }
+            val result = withContext(Dispatchers.IO) {
+                hostGit.testConnection(settings.copy(password = password))
+            }
+            mutableState.value = mutableState.value.copy(
+                message = result.fold(
+                    onSuccess = { "SSH OK: ${it.lineSequence().firstOrNull() ?: "connected"}" },
+                    onFailure = { it.message ?: "SSH connection failed" },
+                ),
+            )
+        }
+    }
+
+    fun setActiveLlmProfile(id: String) {
+        llmStore.setActiveProfileId(id)
+        refreshSettingsFromDisk()
+    }
+
+    fun saveLlmProfile(profile: LlmProfile) {
+        val existing = llmStore.profiles().firstOrNull { it.id == profile.id }
+        val apiKey = when {
+            profile.apiKey.isBlank() -> existing?.apiKey.orEmpty()
+            profile.apiKey == MASKED_SECRET -> existing?.apiKey.orEmpty()
+            else -> profile.apiKey
+        }
+        llmStore.upsert(profile.copy(apiKey = apiKey))
+        llmStore.setActiveProfileId(profile.id)
+        refreshSettingsFromDisk()
+        mutableState.value = mutableState.value.copy(message = "LLM profile saved")
+    }
+
+    fun addLlmPreset(kind: LlmProviderKind) {
+        val profile = LlmProfile.preset(kind).copy(
+            id = UUID.randomUUID().toString(),
+            name = kind.label,
+        )
+        llmStore.upsert(profile)
+        llmStore.setActiveProfileId(profile.id)
+        refreshSettingsFromDisk()
+        mutableState.value = mutableState.value.copy(message = "Added ${kind.label} profile")
+    }
+
+    fun deleteLlmProfile(id: String) {
+        llmStore.delete(id)
+        refreshSettingsFromDisk()
+        mutableState.value = mutableState.value.copy(message = "LLM profile removed")
+    }
+
+    fun loadModelsForActiveProfile() {
+        val profile = llmStore.activeProfile() ?: return
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(modelLoadStatus = "Loading models…")
+            val result = withContext(Dispatchers.IO) {
+                runCatching { llmClient.fetchModels(profile) }
+            }
+            mutableState.value = result.fold(
+                onSuccess = {
+                    mutableState.value.copy(
+                        modelOptions = it,
+                        modelLoadStatus = if (it.isEmpty()) "No models returned" else "Loaded ${it.size} models",
+                    )
+                },
+                onFailure = {
+                    mutableState.value.copy(
+                        modelOptions = emptyList(),
+                        modelLoadStatus = it.message ?: "Could not load models",
+                    )
+                },
+            )
+        }
+    }
+
+    fun loadOpenRouterProviders(modelId: String) {
+        val profile = llmStore.activeProfile() ?: return
+        if (profile.kind != LlmProviderKind.OpenRouter) return
+        viewModelScope.launch {
+            mutableState.value = mutableState.value.copy(
+                openRouterProviderLoadStatus = "Loading providers…",
+            )
+            val result = withContext(Dispatchers.IO) {
+                runCatching { llmClient.fetchOpenRouterProviders(profile, modelId) }
+            }
+            mutableState.value = result.fold(
+                onSuccess = {
+                    mutableState.value.copy(
+                        openRouterProviders = it,
+                        openRouterProviderLoadStatus = if (it.isEmpty()) {
+                            "No provider pins for this model"
+                        } else {
+                            "Loaded ${it.size} providers"
+                        },
+                    )
+                },
+                onFailure = {
+                    mutableState.value.copy(
+                        openRouterProviders = emptyList(),
+                        openRouterProviderLoadStatus = it.message ?: "Could not load providers",
+                    )
+                },
+            )
+        }
+    }
+
+    fun startPublishFlow(repository: RepositoryId) {
+        val ssh = sshStore.get()
+        val profile = llmStore.activeProfile()
+        when {
+            !ssh.isConfigured -> {
+                mutableState.value = mutableState.value.copy(message = "Configure SSH in Settings first")
+                return
+            }
+            profile?.isConfigured != true -> {
+                mutableState.value = mutableState.value.copy(message = "Configure an LLM profile in Settings first")
+                return
+            }
+            mutableState.value.publishDraft != null -> {
+                mutableState.value = mutableState.value.copy(message = "Finish or dismiss the open publish draft first")
+                return
+            }
+        }
+        mutableState.value = mutableState.value.copy(
+            publishDraft = PublishDraft(repository = repository, generating = true),
+        )
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    val diff = hostGit.fetchDiff(ssh, repository)
+                    val suggestion = llmClient.suggestCommit(profile!!, repository, diff)
+                    suggestion to diff.statusPorcelain
+                }
+            }
+            outcome.fold(
+                onSuccess = { (suggestion, status) ->
+                    mutableState.value = mutableState.value.copy(
+                        publishDraft = PublishDraft(
+                            repository = repository,
+                            generating = false,
+                            commitMessage = suggestion.commitMessage,
+                            bump = suggestion.bump,
+                            bumpRationale = suggestion.bumpRationale,
+                            statusPorcelain = status,
+                        ),
+                    )
+                },
+                onFailure = { error ->
+                    mutableState.value = mutableState.value.copy(
+                        publishDraft = PublishDraft(
+                            repository = repository,
+                            generating = false,
+                            error = error.message ?: "Could not prepare publish",
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
+    fun updatePublishDraftMessage(message: String) {
+        val draft = mutableState.value.publishDraft ?: return
+        if (draft.publishing || draft.generating) return
+        mutableState.value = mutableState.value.copy(publishDraft = draft.copy(commitMessage = message))
+    }
+
+    fun updatePublishDraftBump(bump: VersionBump) {
+        val draft = mutableState.value.publishDraft ?: return
+        if (draft.publishing || draft.generating) return
+        mutableState.value = mutableState.value.copy(publishDraft = draft.copy(bump = bump))
+    }
+
+    fun dismissPublishDraft() {
+        val draft = mutableState.value.publishDraft
+        if (draft?.publishing == true) return
+        mutableState.value = mutableState.value.copy(publishDraft = null)
+    }
+
+    fun confirmPublish() {
+        val draft = mutableState.value.publishDraft ?: return
+        if (draft.generating || draft.publishing) return
+        if (draft.commitMessage.isBlank()) {
+            mutableState.value = mutableState.value.copy(
+                publishDraft = draft.copy(error = "Commit message is required"),
+            )
+            return
+        }
+        val ssh = sshStore.get()
+        if (!ssh.isConfigured) {
+            mutableState.value = mutableState.value.copy(message = "SSH is not configured")
+            return
+        }
+        mutableState.value = mutableState.value.copy(
+            publishDraft = draft.copy(publishing = true, error = null, logTail = "Starting remote publish…"),
+        )
+        updateRelease(draft.repository.fullName) {
+            it.copy(publishPhase = "Publishing…")
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    hostGit.publish(
+                        settings = ssh,
+                        repository = draft.repository,
+                        commitMessage = draft.commitMessage,
+                        bump = draft.bump,
+                    )
+                }
+            }
+            result.fold(
+                onSuccess = { publishResult ->
+                    updateRelease(draft.repository.fullName) {
+                        it.copy(
+                            publishPhase = null,
+                            hasUncommittedChanges = if (publishResult.success) false else it.hasUncommittedChanges,
+                            dirtySummary = if (publishResult.success) null else it.dirtySummary,
+                        )
+                    }
+                    mutableState.value = mutableState.value.copy(
+                        publishDraft = if (publishResult.success) {
+                            null
+                        } else {
+                            draft.copy(
+                                publishing = false,
+                                error = publishResult.message,
+                                logTail = publishResult.log.takeLast(1_500),
+                            )
+                        },
+                        message = publishResult.message,
+                    )
+                    if (publishResult.success) {
+                        refresh()
+                    }
+                },
+                onFailure = { error ->
+                    updateRelease(draft.repository.fullName) { it.copy(publishPhase = null) }
+                    mutableState.value = mutableState.value.copy(
+                        publishDraft = draft.copy(
+                            publishing = false,
+                            error = error.message ?: "Publish failed",
+                        ),
+                        message = error.message ?: "Publish failed",
+                    )
+                },
+            )
+        }
     }
 
     fun addSource(value: String): Boolean {
@@ -113,17 +478,14 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         )
     }
 
-    /** Queue a background download and open the installer when it finishes. */
     fun downloadAndInstall(release: ReleaseInfo) {
         startDownload(release, installWhenReady = true, force = false)
     }
 
-    /** Queue a background download and keep the APK cached for later install. */
     fun downloadOnly(release: ReleaseInfo, force: Boolean = false) {
         startDownload(release, installWhenReady = false, force = force)
     }
 
-    /** Install a previously downloaded and verified APK without re-downloading. */
     fun installCached(release: ReleaseInfo) {
         val file = repository.cachedApk(release)
         if (file == null) {
@@ -135,7 +497,6 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         requestInstall(file, release)
     }
 
-    /** Called by the activity when starting the system installer fails before a session is created. */
     fun onInstallStartFailed(release: ReleaseInfo, message: String?) {
         updateRelease(release.repository.fullName) { it.copy(installProgress = null) }
         mutableState.value = mutableState.value.copy(
@@ -157,6 +518,24 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
 
     fun clearMessage() {
         mutableState.value = mutableState.value.copy(message = null)
+    }
+
+    fun activeProfileForEdit(): LlmProfile? = llmStore.activeProfile()?.copy(
+        apiKey = if (llmStore.activeProfile()?.apiKey?.isNotBlank() == true) MASKED_SECRET else "",
+    )
+
+    private fun refreshSettingsFromDisk() {
+        val ssh = sshStore.get()
+        val profiles = llmStore.profiles()
+        mutableState.value = mutableState.value.copy(
+            sshConfigured = ssh.isConfigured,
+            llmConfigured = llmStore.activeProfile()?.isConfigured == true,
+            sshSettings = ssh.copy(
+                password = if (ssh.password.isNotBlank()) MASKED_SECRET else "",
+            ),
+            llmProfiles = profiles.map { it.redacted() },
+            activeLlmProfileId = llmStore.activeProfileId(),
+        )
     }
 
     private fun requestInstall(file: File, release: ReleaseInfo) {
@@ -262,12 +641,10 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             updateRelease(repoKey) { item ->
                 item.copy(
                     installProgress = null,
-                    // Keep cache on failure so the user can retry without re-downloading.
                     isCached = if (event.success) false else item.isCached,
                 )
             }
         } else {
-            // Clear any stuck installing rows if we cannot resolve the repo.
             mutableState.value = mutableState.value.copy(
                 releases = mutableState.value.releases.map { item ->
                     if (item.installProgress != null) item.copy(installProgress = null) else item
@@ -298,7 +675,6 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 ?: continue
             val existing = activeByRepo[repo]
             if (existing == null || info.state.isFinished.not() || existing.state.isFinished) {
-                // Prefer non-finished work; otherwise keep the newest finished result.
                 if (existing == null ||
                     (!info.state.isFinished && existing.state.isFinished) ||
                     info.id.toString() > existing.id.toString()
@@ -360,7 +736,6 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                         if (installWhenReady && file != null) {
                             val release = releases.firstOrNull { it.repository.fullName == repo }?.release
                             if (release != null) {
-                                // Update local snapshot then request install (sets installProgress).
                                 mutableState.value = mutableState.value.copy(releases = releases)
                                 requestInstall(file, release)
                                 return
@@ -396,7 +771,6 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
-        // Clear download progress for repos that no longer have active work.
         val activeRepos = activeByRepo.keys
         releases = releases.map { item ->
             if (item.downloadProgress != null && item.repository.fullName !in activeRepos) {
@@ -426,11 +800,16 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
             loaded.copy(
                 downloadProgress = if (alreadyInstalled) null else previous?.downloadProgress,
                 installProgress = if (alreadyInstalled) null else previous?.installProgress,
-                // Never keep a stale "cached" flag for an install that is already current.
-                isCached = if (alreadyInstalled) false else {
+                isCached = if (alreadyInstalled) {
+                    false
+                } else {
                     loaded.isCached || (previous?.isCached == true && loaded.release != null &&
                         previous.release?.let { repository.isCached(it) } == true)
                 },
+                hasUncommittedChanges = previous?.hasUncommittedChanges == true,
+                dirtySummary = previous?.dirtySummary,
+                hostError = previous?.hostError,
+                publishPhase = previous?.publishPhase,
             )
         }
     }
@@ -441,5 +820,13 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                 if (item.repository.fullName == repositoryFullName) transform(item) else item
             },
         )
+    }
+
+    private fun LlmProfile.redacted(): LlmProfile = copy(
+        apiKey = if (apiKey.isNotBlank()) MASKED_SECRET else "",
+    )
+
+    companion object {
+        const val MASKED_SECRET = "••••••••"
     }
 }

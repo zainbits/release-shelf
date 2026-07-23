@@ -11,8 +11,8 @@ android {
         applicationId = "dev.zain.releaseshelf"
         minSdk = 29
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 12
+        versionName = "0.1.11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.sshj)
 
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)

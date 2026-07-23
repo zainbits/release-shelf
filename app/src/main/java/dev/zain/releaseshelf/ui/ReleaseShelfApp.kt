@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -82,17 +85,19 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import dev.zain.releaseshelf.PublishDraft
 import dev.zain.releaseshelf.ReleaseShelfState
 import dev.zain.releaseshelf.ReleaseShelfViewModel
 import dev.zain.releaseshelf.data.ReleaseInfo
 import dev.zain.releaseshelf.data.RepositoryId
 import dev.zain.releaseshelf.data.TrackedRelease
 import dev.zain.releaseshelf.data.UpdateStatus
+import dev.zain.releaseshelf.data.VersionBump
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private enum class Destination { UPDATES, SOURCES }
+private enum class Destination { UPDATES, SOURCES, SETTINGS }
 private enum class ReleaseFilter { ALL, UPDATES }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -116,12 +121,18 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
             LargeTopAppBar(
                 title = {
                     Column {
-                        Text(if (destination == Destination.UPDATES) "ReleaseShelf" else "Sources")
                         Text(
-                            text = if (destination == Destination.UPDATES) {
-                                "Your apps, directly from GitHub"
-                            } else {
-                                "Repositories and access"
+                            when (destination) {
+                                Destination.UPDATES -> "ReleaseShelf"
+                                Destination.SOURCES -> "Sources"
+                                Destination.SETTINGS -> "Settings"
+                            },
+                        )
+                        Text(
+                            text = when (destination) {
+                                Destination.UPDATES -> "Your apps, directly from GitHub"
+                                Destination.SOURCES -> "Repositories and access"
+                                Destination.SETTINGS -> "SSH host and LLM profiles"
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -130,7 +141,12 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
                 },
                 actions = {
                     if (destination == Destination.UPDATES) {
-                        IconButton(onClick = viewModel::refresh, enabled = !state.refreshing) {
+                        IconButton(
+                            onClick = {
+                                viewModel.refresh()
+                            },
+                            enabled = !state.refreshing && !state.scanningHost,
+                        ) {
                             Icon(Icons.Outlined.Refresh, contentDescription = "Check for updates")
                         }
                     }
@@ -155,6 +171,12 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
                     icon = { Icon(Icons.AutoMirrored.Outlined.List, contentDescription = null) },
                     label = { Text("Sources") },
                 )
+                NavigationBarItem(
+                    selected = destination == Destination.SETTINGS,
+                    onClick = { destination = Destination.SETTINGS },
+                    icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                    label = { Text("Settings") },
+                )
             }
         },
         floatingActionButton = {
@@ -176,13 +198,28 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
                 onInstallCached = viewModel::installCached,
                 onCancelDownload = viewModel::cancelDownload,
                 onRemoveCached = viewModel::removeCached,
+                onPublishLocal = viewModel::startPublishFlow,
                 onOpenSources = { destination = Destination.SOURCES },
+                onOpenSettings = { destination = Destination.SETTINGS },
             )
             Destination.SOURCES -> SourcesScreen(
                 state = state,
                 contentPadding = padding,
                 onSaveToken = viewModel::saveToken,
                 onRemove = viewModel::removeSource,
+            )
+            Destination.SETTINGS -> SettingsScreen(
+                state = state,
+                contentPadding = padding,
+                onSaveSsh = viewModel::saveSshSettings,
+                onTestSsh = viewModel::testSshConnection,
+                onSelectProfile = viewModel::setActiveLlmProfile,
+                onSaveProfile = viewModel::saveLlmProfile,
+                onAddPreset = viewModel::addLlmPreset,
+                onDeleteProfile = viewModel::deleteLlmProfile,
+                onLoadModels = viewModel::loadModelsForActiveProfile,
+                onLoadProviders = viewModel::loadOpenRouterProviders,
+                activeProfile = viewModel.activeProfileForEdit(),
             )
         }
     }
@@ -193,6 +230,16 @@ fun ReleaseShelfApp(viewModel: ReleaseShelfViewModel) {
             onAdd = { value ->
                 if (viewModel.addSource(value)) addDialogVisible = false
             },
+        )
+    }
+
+    state.publishDraft?.let { draft ->
+        PublishDraftDialog(
+            draft = draft,
+            onMessageChange = viewModel::updatePublishDraftMessage,
+            onBumpChange = viewModel::updatePublishDraftBump,
+            onConfirm = viewModel::confirmPublish,
+            onDismiss = viewModel::dismissPublishDraft,
         )
     }
 }
@@ -207,11 +254,14 @@ private fun UpdatesScreen(
     onInstallCached: (ReleaseInfo) -> Unit,
     onCancelDownload: (String) -> Unit,
     onRemoveCached: (ReleaseInfo) -> Unit,
+    onPublishLocal: (RepositoryId) -> Unit,
     onOpenSources: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     var filter by rememberSaveable { mutableStateOf(ReleaseFilter.ALL) }
     val updateCount = state.releases.count { it.status == UpdateStatus.UPDATE_AVAILABLE }
     val cachedCount = state.releases.count { it.isCached }
+    val dirtyCount = state.releases.count { it.hasUncommittedChanges }
     val visibleReleases = state.releases.filter {
         filter == ReleaseFilter.ALL || it.status == UpdateStatus.UPDATE_AVAILABLE
     }
@@ -231,13 +281,33 @@ private fun UpdatesScreen(
                 updateCount = updateCount,
                 sourceCount = state.sources.size,
                 cachedCount = cachedCount,
-                refreshing = state.refreshing,
+                dirtyCount = dirtyCount,
+                refreshing = state.refreshing || state.scanningHost,
                 lastChecked = state.lastChecked,
                 onRefresh = onRefresh,
             )
         }
         if (!state.tokenConfigured) {
             item { AccessBanner(onOpenSources) }
+        }
+        if (!state.sshConfigured) {
+            item {
+                HostSetupBanner(
+                    title = "Build host not configured",
+                    body = "Add SSH password access to scan uncommitted changes and publish from each card.",
+                    actionLabel = "Settings",
+                    onAction = onOpenSettings,
+                )
+            }
+        } else if (!state.llmConfigured) {
+            item {
+                HostSetupBanner(
+                    title = "LLM profile incomplete",
+                    body = "Add an API key under Settings so dirty cards can generate commit messages.",
+                    actionLabel = "Settings",
+                    onAction = onOpenSettings,
+                )
+            }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -280,6 +350,7 @@ private fun UpdatesScreen(
                 onInstallCached = onInstallCached,
                 onCancelDownload = onCancelDownload,
                 onRemoveCached = onRemoveCached,
+                onPublishLocal = onPublishLocal,
             )
         }
         if (state.refreshing && state.releases.isEmpty()) {
@@ -293,6 +364,7 @@ private fun UpdateSummaryCard(
     updateCount: Int,
     sourceCount: Int,
     cachedCount: Int,
+    dirtyCount: Int,
     refreshing: Boolean,
     lastChecked: Instant?,
     onRefresh: () -> Unit,
@@ -300,7 +372,8 @@ private fun UpdateSummaryCard(
     val colors = MaterialTheme.colorScheme
     val title = when {
         refreshing -> "Checking your shelf…"
-        updateCount == 0 -> "You’re up to date"
+        updateCount == 0 && dirtyCount == 0 -> "You’re up to date"
+        updateCount == 0 && dirtyCount > 0 -> "$dirtyCount local change${if (dirtyCount == 1) "" else "s"}"
         updateCount == 1 -> "1 update is ready"
         else -> "$updateCount updates are ready"
     }
@@ -312,6 +385,9 @@ private fun UpdateSummaryCard(
         }
         if (cachedCount > 0) {
             append(" · $cachedCount cached")
+        }
+        if (dirtyCount > 0) {
+            append(" · $dirtyCount dirty")
         }
     }
     ElevatedCard(
@@ -401,6 +477,21 @@ private fun UpdateSummaryCard(
 
 @Composable
 private fun AccessBanner(onOpenSources: () -> Unit) {
+    HostSetupBanner(
+        title = "Private repository access",
+        body = "Add a read-only GitHub token to check private releases.",
+        actionLabel = "Set up",
+        onAction = onOpenSources,
+    )
+}
+
+@Composable
+private fun HostSetupBanner(
+    title: String,
+    body: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
     OutlinedCard(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
         Row(
             modifier = Modifier.padding(18.dp),
@@ -409,14 +500,14 @@ private fun AccessBanner(onOpenSources: () -> Unit) {
         ) {
             Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(modifier = Modifier.weight(1f)) {
-                Text("Private repository access", fontWeight = FontWeight.SemiBold)
+                Text(title, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Add a read-only GitHub token to check private releases.",
+                    body,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = onOpenSources) { Text("Set up") }
+            TextButton(onClick = onAction) { Text(actionLabel) }
         }
     }
 }
@@ -429,12 +520,14 @@ private fun ReleaseCard(
     onInstallCached: (ReleaseInfo) -> Unit,
     onCancelDownload: (String) -> Unit,
     onRemoveCached: (ReleaseInfo) -> Unit,
+    onPublishLocal: (RepositoryId) -> Unit,
 ) {
     val context = LocalContext.current
     val release = item.release
     val downloading = item.downloadProgress != null
     val installing = item.installProgress != null
-    val busy = downloading || installing
+    val publishing = item.publishPhase != null
+    val busy = downloading || installing || publishing
     // Only offer install/download when the shelf version is not already installed.
     val needsInstall = item.status == UpdateStatus.UPDATE_AVAILABLE ||
         item.status == UpdateStatus.NOT_INSTALLED
@@ -529,6 +622,57 @@ private fun ReleaseCard(
                         Spacer(Modifier.width(6.dp))
                     }
                     StatusChip(item.status)
+                }
+                if (item.hasUncommittedChanges || item.hostError != null || publishing) {
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                when {
+                                    publishing -> item.publishPhase ?: "Publishing…"
+                                    item.hostError != null -> "Host: ${item.hostError}"
+                                    else -> "Uncommitted changes on build host"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (item.hostError != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                            item.dirtySummary?.takeIf { it.isNotBlank() }?.let { summary ->
+                                Text(
+                                    summary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (item.hasUncommittedChanges && !busy) {
+                                Button(
+                                    onClick = { onPublishLocal(item.repository) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Refresh,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Publish local changes")
+                                }
+                            }
+                            if (publishing) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
                 }
                 AnimatedVisibility(visible = downloading && needsInstall) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -814,6 +958,120 @@ private fun SourcesScreen(
             dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } },
         )
     }
+}
+
+@Composable
+private fun PublishDraftDialog(
+    draft: PublishDraft,
+    onMessageChange: (String) -> Unit,
+    onBumpChange: (VersionBump) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {
+            if (!draft.publishing && !draft.generating) onDismiss()
+        },
+        icon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+        title = { Text("Publish ${draft.repository.name}") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                when {
+                    draft.generating -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                            Text("Fetching diff and generating commit message…")
+                        }
+                    }
+                    draft.publishing -> {
+                        Text("Running remote commit, version bump, push, and androidrun --publish. This can take several minutes.")
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        if (draft.logTail.isNotBlank()) {
+                            Text(
+                                draft.logTail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    else -> {
+                        draft.statusPorcelain.takeIf { it.isNotBlank() }?.let { status ->
+                            Text(
+                                status.lineSequence().take(8).joinToString("\n"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedTextField(
+                            value = draft.commitMessage,
+                            onValueChange = onMessageChange,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp),
+                            label = { Text("Commit message") },
+                        )
+                        Text("Version bump", style = MaterialTheme.typography.labelLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            VersionBump.entries.forEach { level ->
+                                FilterChip(
+                                    selected = draft.bump == level,
+                                    onClick = { onBumpChange(level) },
+                                    label = { Text(level.cli) },
+                                )
+                            }
+                        }
+                        if (draft.bumpRationale.isNotBlank()) {
+                            Text(
+                                "Suggested ${draft.bump.cli}: ${draft.bumpRationale}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            "Confirms: git commit → androidrun --bump → bump commit → git push → androidrun --publish",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        draft.error?.let { error ->
+                            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (draft.logTail.isNotBlank()) {
+                            Text(
+                                draft.logTail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                draft.generating -> {}
+                draft.publishing -> {}
+                else -> Button(
+                    onClick = onConfirm,
+                    enabled = draft.commitMessage.isNotBlank(),
+                ) { Text("Commit & publish") }
+            }
+        },
+        dismissButton = {
+            if (!draft.publishing) {
+                TextButton(onClick = onDismiss, enabled = !draft.generating) {
+                    Text(if (draft.generating) "Working…" else "Cancel")
+                }
+            }
+        },
+    )
 }
 
 @Composable

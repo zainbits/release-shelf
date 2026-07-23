@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="release_shelf_secret.xml" />
+    <exclude domain="sharedpref" path="release_shelf_ssh_secret.xml" />
+    <exclude domain="sharedpref" path="release_shelf_llm_secret.xml" />
 </full-backup-content>
