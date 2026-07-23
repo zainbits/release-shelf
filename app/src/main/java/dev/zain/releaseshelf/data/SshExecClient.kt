@@ -26,7 +26,8 @@ class SshExecClient {
         timeoutSeconds: Int = DEFAULT_TIMEOUT_SECONDS,
     ): SshCommandResult {
         require(settings.isConfigured) { "SSH host, username, and password are required" }
-        val client = SSHClient()
+        AndroidSshSupport.ensureCryptoProviders()
+        val client = SSHClient(AndroidSshSupport.clientConfig())
         // Personal build host on LAN/Tailscale; first-version password auth without TOFU UI.
         client.addHostKeyVerifier(PromiscuousVerifier())
         client.connectTimeout = CONNECT_TIMEOUT_MS

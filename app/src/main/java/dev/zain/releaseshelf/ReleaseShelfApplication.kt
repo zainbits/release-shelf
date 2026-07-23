@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.pm.PackageInstaller
 import android.os.Handler
 import android.os.Looper
+import dev.zain.releaseshelf.data.AndroidSshSupport
 import dev.zain.releaseshelf.updater.ActiveInstallSessions
 import dev.zain.releaseshelf.updater.ApkDownloadWorker
 import dev.zain.releaseshelf.updater.InstallNotifier
@@ -42,6 +43,8 @@ class ReleaseShelfApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Replace Android's incomplete BC provider so sshj can negotiate KEX.
+        AndroidSshSupport.ensureCryptoProviders()
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(

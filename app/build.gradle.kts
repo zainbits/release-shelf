@@ -11,8 +11,8 @@ android {
         applicationId = "dev.zain.releaseshelf"
         minSdk = 29
         targetSdk = 37
-        versionCode = 12
-        versionName = "0.1.11"
+        versionCode = 13
+        versionName = "0.1.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -49,6 +49,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.sshj)
+    // Explicit so Android can replace the incomplete system "BC" provider for sshj.
+    implementation(libs.bouncycastle.bcprov)
 
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)
