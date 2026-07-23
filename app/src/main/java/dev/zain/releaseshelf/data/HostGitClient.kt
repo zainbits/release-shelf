@@ -120,11 +120,16 @@ class HostGitClient(
             echo 'RS_STATUS_BEGIN'
             git -C "${'$'}REPO_PATH" status --porcelain
             echo 'RS_STATUS_END'
+            echo 'RS_STAT_BEGIN'
+            git -C "${'$'}REPO_PATH" diff HEAD --stat
+            echo 'RS_STAT_END'
             echo 'RS_DIFF_BEGIN'
-            git -C "${'$'}REPO_PATH" diff HEAD
+            # Cap patch size on the host so phones/models are not flooded.
+            git -C "${'$'}REPO_PATH" diff HEAD | head -c 40000
+            echo
             echo 'RS_DIFF_END'
             echo 'RS_UNTRACKED_BEGIN'
-            git -C "${'$'}REPO_PATH" ls-files --others --exclude-standard
+            git -C "${'$'}REPO_PATH" ls-files --others --exclude-standard | head -n 40
             echo 'RS_UNTRACKED_END'
         """.trimIndent()
 
@@ -137,10 +142,19 @@ class HostGitClient(
             error(result.combinedOutput.ifBlank { "Could not fetch git diff" })
         }
         val status = section(result.stdout, "RS_STATUS_BEGIN", "RS_STATUS_END")
+        val stat = section(result.stdout, "RS_STAT_BEGIN", "RS_STAT_END")
         val diff = section(result.stdout, "RS_DIFF_BEGIN", "RS_DIFF_END")
         val untracked = section(result.stdout, "RS_UNTRACKED_BEGIN", "RS_UNTRACKED_END")
         val combinedDiff = buildString {
-            append(diff.trim())
+            if (stat.isNotBlank()) {
+                append("Diff stat:\n")
+                append(stat.trim())
+            }
+            if (diff.isNotBlank()) {
+                if (isNotEmpty()) append("\n\n")
+                append("Patch excerpt:\n")
+                append(diff.trim())
+            }
             if (untracked.isNotBlank()) {
                 if (isNotEmpty()) append("\n\n")
                 append("Untracked files:\n")

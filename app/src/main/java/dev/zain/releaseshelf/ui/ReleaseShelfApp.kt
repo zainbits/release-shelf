@@ -1041,7 +1041,11 @@ private fun PublishDraftDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         draft.error?.let { error ->
-                            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                error.lineSequence().take(8).joinToString("\n").take(500),
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                         if (draft.logTail.isNotBlank()) {
                             Text(

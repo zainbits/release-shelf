@@ -19,13 +19,15 @@ class LlmChatClient(private val appContext: Context) {
             appendLine("Local path: ${bundle.localPath}")
             appendLine()
             appendLine("git status --porcelain:")
-            appendLine(bundle.statusPorcelain.ifBlank { "(empty)" })
+            appendLine(truncate(bundle.statusPorcelain.ifBlank { "(empty)" }, MAX_STATUS_CHARS))
             appendLine()
-            appendLine("Diff / untracked summary (may be truncated):")
+            appendLine("Diff / untracked summary (truncated; do NOT echo this back):")
             append(truncate(bundle.diff.ifBlank { "(no diff text)" }, MAX_DIFF_CHARS))
+            appendLine()
+            appendLine("Respond with a small JSON object only. Do not repeat the diff.")
         }
         val content = chatCompletion(profile, systemPrompt, userPrompt)
-        return parseCommitSuggestion(content)
+        return CommitSuggestionParser.parse(content)
     }
 
     fun fetchModels(profile: LlmProfile): List<LlmModelOption> {
@@ -79,6 +81,7 @@ class LlmChatClient(private val appContext: Context) {
                     .put(JSONObject().put("role", "user").put("content", userPrompt)),
             )
             .put("temperature", 0.2)
+            .put("max_tokens", MAX_OUTPUT_TOKENS)
             .put(
                 "response_format",
                 JSONObject().put("type", "json_object"),
@@ -139,31 +142,6 @@ class LlmChatClient(private val appContext: Context) {
                 .put("allow_fallbacks", false),
         )
         return this
-    }
-
-    private fun parseCommitSuggestion(content: String): CommitSuggestion {
-        val jsonText = extractJsonObject(content)
-        val json = JSONObject(jsonText)
-        val message = json.optString("commit_message")
-            .ifBlank { json.optString("message") }
-            .trim()
-        if (message.isBlank()) throw IOException("LLM did not return commit_message")
-        val bumpRaw = json.optString("bump").ifBlank { "patch" }
-        val rationale = json.optString("bump_rationale").trim()
-        return CommitSuggestion(
-            commitMessage = message,
-            bump = VersionBump.fromCli(bumpRaw),
-            bumpRationale = rationale,
-        )
-    }
-
-    private fun extractJsonObject(content: String): String {
-        val trimmed = content.trim()
-        if (trimmed.startsWith("{")) return trimmed
-        val start = trimmed.indexOf('{')
-        val end = trimmed.lastIndexOf('}')
-        if (start >= 0 && end > start) return trimmed.substring(start, end + 1)
-        throw IOException("LLM response was not JSON")
     }
 
     private fun loadSystemPrompt(): String {
@@ -263,16 +241,18 @@ class LlmChatClient(private val appContext: Context) {
 
     companion object {
         private const val PROMPT_ASSET = "prompts/commit_message.md"
-        private const val MAX_DIFF_CHARS = 80_000
+        private const val MAX_STATUS_CHARS = 4_000
+        private const val MAX_DIFF_CHARS = 24_000
+        private const val MAX_OUTPUT_TOKENS = 700
         private const val TIMEOUT_MS = 30_000
         private const val CHAT_TIMEOUT_MS = 120_000
 
         private val FALLBACK_PROMPT = """
             You generate git commit metadata for personal Android apps.
-            Return ONLY valid JSON:
+            Return ONLY a small valid JSON object (no markdown, no diff echo):
             {"commit_message":"type: summary","bump":"patch|minor|major","bump_rationale":"why"}
             Use Conventional Commits (feat/fix/perf/refactor/chore), optional - bullets after a blank line.
-            Prefer patch when unsure. Never include secrets.
+            Keep commit_message under 1200 characters. Prefer patch when unsure. Never include secrets.
         """.trimIndent()
     }
 }

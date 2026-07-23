@@ -11,8 +11,8 @@ android {
         applicationId = "dev.zain.releaseshelf"
         minSdk = 29
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.1.12"
+        versionCode = 14
+        versionName = "0.1.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -53,5 +53,7 @@ dependencies {
     implementation(libs.bouncycastle.bcprov)
 
     testImplementation(libs.junit)
+    // Real org.json for unit tests (Android stubs throw "not mocked").
+    testImplementation(libs.json)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
