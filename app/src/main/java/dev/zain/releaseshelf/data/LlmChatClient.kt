@@ -9,29 +9,10 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
-internal enum class OpenAiServerFlavor {
-    Generic,
-    LlamaCpp,
-}
-
-internal object LlmServerCompatibility {
-    fun detect(modelList: JSONObject): OpenAiServerFlavor {
-        val models = modelList.optJSONArray("data") ?: return OpenAiServerFlavor.Generic
-        for (index in 0 until models.length()) {
-            val owner = models.optJSONObject(index)
-                ?.optString("owned_by")
-                ?.lowercase(Locale.US)
-                ?.replace(Regex("[^a-z0-9]+"), "")
-                .orEmpty()
-            if (owner == "llamacpp") return OpenAiServerFlavor.LlamaCpp
-        }
-        return OpenAiServerFlavor.Generic
-    }
-
-    fun responseFormat(flavor: OpenAiServerFlavor): JSONObject {
-        if (flavor != OpenAiServerFlavor.LlamaCpp) {
+internal object CommitResponseFormat {
+    fun forProvider(provider: LlmProviderKind): JSONObject {
+        if (provider != LlmProviderKind.Cerebras) {
             return JSONObject().put("type", "json_object")
         }
         val schema = JSONObject()
@@ -55,18 +36,17 @@ internal object LlmServerCompatibility {
             .put("additionalProperties", false)
         return JSONObject()
             .put("type", "json_schema")
-            .put("schema", schema)
+            .put(
+                "json_schema",
+                JSONObject()
+                    .put("name", "commit_suggestion")
+                    .put("strict", true)
+                    .put("schema", schema),
+            )
     }
-
-    fun shouldDisableThinking(
-        flavor: OpenAiServerFlavor,
-        effort: ReasoningEffort,
-    ): Boolean = flavor == OpenAiServerFlavor.LlamaCpp && effort == ReasoningEffort.None
 }
 
 class LlmChatClient(private val appContext: Context) {
-    private val serverFlavorCache = ConcurrentHashMap<String, OpenAiServerFlavor>()
-
     fun suggestCommit(profile: LlmProfile, repository: RepositoryId, bundle: RepoDiffBundle): CommitSuggestion {
         require(profile.isConfigured) { "Configure an LLM profile in Settings first" }
         val systemPrompt = loadSystemPrompt()
@@ -82,9 +62,8 @@ class LlmChatClient(private val appContext: Context) {
             appendLine()
             appendLine("Respond with a small JSON object only. Do not repeat the diff.")
         }
-        val serverFlavor = detectServerFlavor(profile)
         return try {
-            val content = chatCompletion(profile, systemPrompt, userPrompt, serverFlavor)
+            val content = chatCompletion(profile, systemPrompt, userPrompt)
             CommitSuggestionParser.parse(content)
         } catch (_: InvalidCommitSuggestionException) {
             val retryPrompt = buildString {
@@ -94,7 +73,7 @@ class LlmChatClient(private val appContext: Context) {
                 appendLine("RETRY: The previous response was empty or missing commit_message.")
                 append("Return all three required fields now; commit_message must start with a Conventional Commit type.")
             }
-            val content = chatCompletion(profile, systemPrompt, retryPrompt, serverFlavor)
+            val content = chatCompletion(profile, systemPrompt, retryPrompt)
             CommitSuggestionParser.parse(content)
         }
     }
@@ -144,7 +123,6 @@ class LlmChatClient(private val appContext: Context) {
         profile: LlmProfile,
         systemPrompt: String,
         userPrompt: String,
-        serverFlavor: OpenAiServerFlavor,
     ): String {
         val body = JSONObject()
             .put("model", profile.model)
@@ -156,8 +134,8 @@ class LlmChatClient(private val appContext: Context) {
             )
             .put("temperature", 0.2)
             .put("max_tokens", MAX_OUTPUT_TOKENS)
-            .put("response_format", LlmServerCompatibility.responseFormat(serverFlavor))
-            .applyReasoning(profile, serverFlavor)
+            .put("response_format", CommitResponseFormat.forProvider(profile.kind))
+            .applyReasoning(profile)
             .applyOpenRouterProvider(profile)
 
         val endpoint = buildUrl(profile.effectiveBaseUrl, "chat/completions")
@@ -173,18 +151,8 @@ class LlmChatClient(private val appContext: Context) {
         return content
     }
 
-    private fun JSONObject.applyReasoning(
-        profile: LlmProfile,
-        serverFlavor: OpenAiServerFlavor,
-    ): JSONObject {
+    private fun JSONObject.applyReasoning(profile: LlmProfile): JSONObject {
         val effort = profile.reasoningEffort
-        if (LlmServerCompatibility.shouldDisableThinking(serverFlavor, effort)) {
-            put(
-                "chat_template_kwargs",
-                JSONObject().put("enable_thinking", false),
-            )
-            return this
-        }
         when (profile.kind) {
             LlmProviderKind.OpenRouter -> {
                 when (effort) {
@@ -212,18 +180,6 @@ class LlmChatClient(private val appContext: Context) {
             }
         }
         return this
-    }
-
-    private fun detectServerFlavor(profile: LlmProfile): OpenAiServerFlavor {
-        if (profile.kind != LlmProviderKind.Custom) return OpenAiServerFlavor.Generic
-        val cacheKey = profile.effectiveBaseUrl
-        serverFlavorCache[cacheKey]?.let { return it }
-        val detected = runCatching {
-            val endpoint = buildUrl(profile.effectiveBaseUrl, "models")
-            LlmServerCompatibility.detect(getJson(endpoint, profile.apiKey))
-        }.getOrNull() ?: return OpenAiServerFlavor.Generic
-        serverFlavorCache[cacheKey] = detected
-        return detected
     }
 
     private fun JSONObject.applyOpenRouterProvider(profile: LlmProfile): JSONObject {
