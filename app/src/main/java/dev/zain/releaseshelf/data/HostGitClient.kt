@@ -186,23 +186,58 @@ class HostGitClient(
             export ANDROID_HOME="${'$'}{ANDROID_HOME:-${'$'}HOME/Android/Sdk}"
             export ANDROID_SDK_ROOT="${'$'}{ANDROID_SDK_ROOT:-${'$'}ANDROID_HOME}"
             export PATH="${'$'}HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:${'$'}PATH"
+            if [ -z "${'$'}{JAVA_HOME:-}" ] || [ ! -x "${'$'}JAVA_HOME/bin/java" ]; then
+              for JAVA_CANDIDATE in \
+                "${'$'}HOME/.local/share/jdks/temurin-21" \
+                "${'$'}HOME/.local/share/jdks/temurin-17" \
+                "${'$'}HOME/.jdks/temurin-21" \
+                "${'$'}HOME/.jdks/temurin-17" \
+                "${'$'}HOME/android-studio/jbr" \
+                "/opt/android-studio/jbr"; do
+                if [ -x "${'$'}JAVA_CANDIDATE/bin/java" ]; then
+                  export JAVA_HOME="${'$'}JAVA_CANDIDATE"
+                  break
+                fi
+              done
+            fi
+            if [ -n "${'$'}{JAVA_HOME:-}" ] && [ -x "${'$'}JAVA_HOME/bin/java" ]; then
+              export PATH="${'$'}JAVA_HOME/bin:${'$'}PATH"
+            elif command -v java >/dev/null 2>&1; then
+              JAVA_BIN="${'$'}(command -v java)"
+              JAVA_BIN="${'$'}(readlink -f "${'$'}JAVA_BIN" 2>/dev/null || printf '%s' "${'$'}JAVA_BIN")"
+              export JAVA_HOME="${'$'}{JAVA_BIN%/bin/java}"
+            else
+              echo "RS_JAVA_MISSING: Java 17 or newer was not found on the build host" >&2
+              exit 3
+            fi
+            command -v androidrun >/dev/null 2>&1 || {
+              echo "RS_ANDROIDRUN_MISSING: androidrun was not found on the build host" >&2
+              exit 3
+            }
+            command -v gh >/dev/null 2>&1 || {
+              echo "RS_GH_MISSING: GitHub CLI was not found on the build host" >&2
+              exit 3
+            }
+            gh auth status >/dev/null 2>&1 || {
+              echo "RS_GH_AUTH_MISSING: GitHub CLI is not authenticated on the build host" >&2
+              exit 3
+            }
             ROOT=${shellSingleQuote(settings.projectsRoot.trim().ifBlank { SshSettingsStore.DEFAULT_PROJECTS_ROOT })}
             ROOT="${'$'}{ROOT/#\~/${'$'}HOME}"
             REPO_PATH="${'$'}ROOT"/${shellSingleQuote(repository.name)}
             test -d "${'$'}REPO_PATH/.git"
             cd "${'$'}REPO_PATH"
+            if ! ./gradlew :app:assembleRelease; then
+              echo "RS_PREFLIGHT_BUILD_FAILED: Release build failed before any commit or push" >&2
+              exit 3
+            fi
             MSG_FILE="${'$'}(mktemp)"
             trap 'rm -f "${'$'}MSG_FILE"' EXIT
             printf '%s' ${shellSingleQuote(encoded)} | base64 -d > "${'$'}MSG_FILE"
-            if ! git status --porcelain | grep -q .; then
-              echo "Nothing to commit; working tree clean" >&2
-              exit 2
-            fi
-            git add -A
-            git commit -F "${'$'}MSG_FILE"
-            command -v androidrun >/dev/null
-            NEW_NAME="${'$'}(androidrun --bump ${bump.cli} | tail -n 1 | tr -d '\r')"
             if git status --porcelain | grep -q .; then
+              git add -A
+              git commit -F "${'$'}MSG_FILE"
+              NEW_NAME="${'$'}(androidrun --bump ${bump.cli} | tail -n 1 | tr -d '\r')"
               if [ -n "${'$'}NEW_NAME" ]; then
                 git add -A
                 git commit -m "chore: bump version to ${'$'}NEW_NAME"
@@ -210,6 +245,8 @@ class HostGitClient(
                 git add -A
                 git commit -m "chore: bump version (${bump.cli})"
               fi
+            else
+              echo "RS_PUBLISH_RESUME: Working tree is clean; retrying the pending release"
             fi
             git push
             androidrun --publish
@@ -228,7 +265,11 @@ class HostGitClient(
             log = log,
             message = when {
                 success -> "Published ${repository.name}"
-                log.contains("Nothing to commit") -> "Working tree became clean before commit"
+                log.contains("RS_JAVA_MISSING") -> "Java 17 or newer is not configured on the build host"
+                log.contains("RS_ANDROIDRUN_MISSING") -> "androidrun is not installed on the build host"
+                log.contains("RS_GH_MISSING") -> "GitHub CLI is not installed on the build host"
+                log.contains("RS_GH_AUTH_MISSING") -> "GitHub CLI is not authenticated on the build host"
+                log.contains("RS_PREFLIGHT_BUILD_FAILED") -> "Release build failed before any commit or push"
                 else -> log.lineSequence()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }

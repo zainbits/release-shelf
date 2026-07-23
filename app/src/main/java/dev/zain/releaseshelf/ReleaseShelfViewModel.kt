@@ -433,7 +433,7 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
                             draft.copy(
                                 publishing = false,
                                 error = publishResult.message,
-                                logTail = publishResult.log.takeLast(1_500),
+                                logTail = compactPublishLog(publishResult.log),
                             )
                         },
                         message = publishResult.message,
@@ -830,3 +830,12 @@ class ReleaseShelfViewModel(application: Application) : AndroidViewModel(applica
         const val MASKED_SECRET = "••••••••"
     }
 }
+
+internal fun compactPublishLog(log: String): String =
+    log.lineSequence()
+        .map { it.trimEnd() }
+        .filter { it.isNotBlank() }
+        .toList()
+        .takeLast(12)
+        .joinToString("\n")
+        .takeLast(1_000)
