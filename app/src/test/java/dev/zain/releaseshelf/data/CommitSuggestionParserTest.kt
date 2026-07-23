@@ -2,6 +2,7 @@ package dev.zain.releaseshelf.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class CommitSuggestionParserTest {
@@ -61,5 +62,27 @@ class CommitSuggestionParserTest {
             "commit_message",
         )
         assertEquals("fix: keep frame\n\n- during seek", value)
+    }
+
+    @Test
+    fun emptyJsonObject_isRejectedForRetry() {
+        try {
+            CommitSuggestionParser.parse("{}")
+            fail("Expected an invalid-suggestion error")
+        } catch (_: InvalidCommitSuggestionException) {
+            // Expected: the chat client retries instead of leaving the dialog unusable.
+        }
+    }
+
+    @Test
+    fun punctuationOnlyMessage_isRejectedForRetry() {
+        try {
+            CommitSuggestionParser.parse(
+                """{"commit_message":"{}","bump":"patch","bump_rationale":""}""",
+            )
+            fail("Expected an invalid-suggestion error")
+        } catch (_: InvalidCommitSuggestionException) {
+            // Expected.
+        }
     }
 }

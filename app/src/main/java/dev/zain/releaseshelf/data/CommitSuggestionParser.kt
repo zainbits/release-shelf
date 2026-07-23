@@ -3,6 +3,8 @@ package dev.zain.releaseshelf.data
 import org.json.JSONObject
 import java.io.IOException
 
+class InvalidCommitSuggestionException(message: String) : IOException(message)
+
 /**
  * Parses LLM commit-suggestion payloads. Models often return nearly-valid JSON
  * with unescaped newlines, trailing garbage, or truncated strings — especially
@@ -11,13 +13,15 @@ import java.io.IOException
 object CommitSuggestionParser {
     fun parse(content: String): CommitSuggestion {
         val cleaned = stripFences(content).trim()
-        if (cleaned.isBlank()) throw IOException("LLM returned an empty message")
+        if (cleaned.isBlank()) {
+            throw InvalidCommitSuggestionException("LLM returned an empty message")
+        }
 
         parseStrictJson(cleaned)?.let { return it }
         parseLenientFields(cleaned)?.let { return it }
         parseHeuristic(cleaned)?.let { return it }
 
-        throw IOException(
+        throw InvalidCommitSuggestionException(
             "Could not parse LLM commit suggestion. " +
                 "Try again, switch model, or write the message manually. " +
                 "Preview: ${cleaned.take(180).replace('\n', ' ')}",
@@ -33,10 +37,12 @@ object CommitSuggestionParser {
                     .ifBlank { json.optString("message") }
                     .trim()
                 if (message.isBlank()) return@runCatching null
+                val sanitizedMessage = sanitizeMessage(message)
+                if (sanitizedMessage.isBlank()) return@runCatching null
                 val bump = VersionBump.fromCli(json.optString("bump").ifBlank { "patch" })
                 val rationale = json.optString("bump_rationale").trim()
                 CommitSuggestion(
-                    commitMessage = sanitizeMessage(message),
+                    commitMessage = sanitizedMessage,
                     bump = bump,
                     bumpRationale = rationale.take(500),
                 )
@@ -54,8 +60,10 @@ object CommitSuggestionParser {
             ?.let(VersionBump::fromCli)
             ?: VersionBump.Patch
         val rationale = extractJsonStringField(content, "bump_rationale").orEmpty()
+        val sanitizedMessage = sanitizeMessage(message)
+        if (sanitizedMessage.isBlank()) return null
         return CommitSuggestion(
-            commitMessage = sanitizeMessage(message),
+            commitMessage = sanitizedMessage,
             bump = bump,
             bumpRationale = rationale.take(500),
         )
