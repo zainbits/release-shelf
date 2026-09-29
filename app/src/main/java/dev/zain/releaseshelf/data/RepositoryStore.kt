@@ -45,13 +45,9 @@ class RepositoryStore(context: Context) {
         const val KEY_REPOSITORIES = "repositories"
 
         val DEFAULT_REPOSITORIES = listOf(
-            RepositoryId("zainbits", "AgentRemote"),
-            RepositoryId("zainbits", "Messages"),
-            RepositoryId("zainbits", "NotiTriage"),
-            RepositoryId("zainbits", "PrivateCallGuard"),
-            RepositoryId("zainbits", "ReleaseShelf"),
-            RepositoryId("zainbits", "TubeWave"),
-            RepositoryId("zainbits", "ZnKeyboard"),
+            RepositoryId("zainbits", "agent-remote"),
+            RepositoryId("zainbits", "release-shelf"),
+            RepositoryId("zainbits", "zn-keyboard"),
         )
     }
 }

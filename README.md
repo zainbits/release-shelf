@@ -5,7 +5,7 @@ ReleaseShelf is a personal Android release client for APKs published in GitHub R
 ## Current capabilities
 
 - Material 3 Compose UI with dynamic color, edge-to-edge layout, update filters, loading/error/empty states, and accessible system install handoff.
-- Editable `owner/repository` source list, seeded with the local Android app set.
+- Editable `owner/repository` source list, seeded with a few example repositories.
 - Public repository access without credentials and private repository access through a fine-grained GitHub token.
 - Token encryption with an Android Keystore AES-GCM key; encrypted token preferences are excluded from backup and device transfer.
 - Installed-version comparison using monotonic Android `versionCode`, with semantic `versionName` fallback for legacy releases.
@@ -31,7 +31,7 @@ In **Sources → GitHub access**, add a fine-grained personal access token restr
 
 ## Publishing compatible releases
 
-The local `~/.local/bin/androidrun` publishes both the APK and `androidrun-release.json`. The recommended version flow is:
+The author's `androidrun` build script publishes both the APK and `androidrun-release.json`. The recommended version flow is:
 
 ```bash
 androidrun --bump patch
@@ -70,3 +70,7 @@ ReleaseShelf retains a fallback parser for older `androidrun` release notes, so 
 - Initial installs, Play Protect scans, developer-verification decisions, and any `STATUS_PENDING_USER_ACTION` fallback remain system-controlled. ReleaseShelf always launches the confirmation intent when Android still requires interaction.
 - An update APK must be signed by the same certificate as the installed app. Current `androidrun` releases use the stable local Android debug keystore for personal sideloading.
 - Dynamic repository sources can resolve arbitrary package IDs, so ReleaseShelf declares `QUERY_ALL_PACKAGES`. This matches its sideloaded app-store role but would require policy review before any Google Play distribution; a Play-targeted variant should prefer a fixed `<queries>` allowlist.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
