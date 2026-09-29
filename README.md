@@ -2,6 +2,8 @@
 
 ReleaseShelf is a personal Android release client for APKs published in GitHub Releases. It tracks selected repositories, compares release metadata with installed package versions, downloads private or public assets, verifies them, and hands the APK to Android's system installer.
 
+<p align="center"><img src="docs/screenshot-updates.png" width="300" alt="ReleaseShelf showing tracked apps and their installed versions"></p>
+
 ## Current capabilities
 
 - Material 3 Compose UI with dynamic color, edge-to-edge layout, update filters, loading/error/empty states, and accessible system install handoff.
